@@ -698,6 +698,8 @@ class PDFW_Admin_Page
                 unset($projects_store[$project_id]);
                 $this->save_projects_store($projects_store);
             }
+            // Limpa payload salvo para que itens do projeto excluído não persistam no reload
+            update_option(self::OPTION_KEY, PDFW_Renderer::default_payload(), false);
             wp_send_json_success(['deleted' => true]);
         }
 
