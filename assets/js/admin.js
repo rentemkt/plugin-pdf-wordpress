@@ -19,9 +19,17 @@
   const importProgressBar = document.getElementById('pdfw-import-progress-bar');
   const importProgressLabel = document.getElementById('pdfw-import-progress-label');
   const driveInput = form.querySelector('input[name="drive_folder_url"]');
+  const whisperUrlInput = form.querySelector('input[name="whisper_url"]');
   const importAuditCard = document.getElementById('pdfw-import-audit-card');
   const importAuditSummary = document.getElementById('pdfw-import-audit-summary');
   const importAuditTable = document.getElementById('pdfw-import-audit-table');
+  const transcribeInput = document.getElementById('pdfw-transcribe-input');
+  const transcribeDrop = document.getElementById('pdfw-transcribe-drop');
+  const transcribeProgress = document.getElementById('pdfw-transcribe-progress');
+  const transcribeResult = document.getElementById('pdfw-transcribe-result');
+  const transcriptionText = document.getElementById('pdfw-transcription-text');
+  const copyTranscribeBtn = document.getElementById('pdfw-copy-transcription');
+  const transcribeLabel = document.getElementById('pdfw-transcribe-label');
 
   const recipesRawInput = form.querySelector('textarea[name="recipes_raw"]');
   const categoriesRawInput = form.querySelector('textarea[name="categories_raw"]');
@@ -64,6 +72,7 @@
   let projectDirty = false;
   let activeSection = 'projetos';
   const importButtonDefaultHtml = importButton ? importButton.innerHTML : 'Importar conteúdo';
+  const transcribeDefaultLabelHtml = transcribeLabel ? transcribeLabel.innerHTML : '';
 
   const sampleRecipes = `Panqueca de Banana
 Ingredientes:
@@ -406,6 +415,114 @@ Finalize com azeite extravirgem após o preparo.`;
       toast.classList.add('is-leaving');
       window.setTimeout(() => toast.remove(), 220);
     }, ttlMs);
+  };
+
+  const setTranscribeBusy = (busy, label = '') => {
+    if (transcribeProgress) {
+      transcribeProgress.hidden = !busy;
+    }
+    if (transcribeDrop) {
+      transcribeDrop.classList.toggle('is-busy', busy);
+    }
+    if (transcribeLabel && label) {
+      transcribeLabel.innerHTML = escapeHtml(label).replace(/\n/g, '<br>');
+    }
+    if (transcribeInput) {
+      transcribeInput.disabled = busy;
+    }
+  };
+
+  const isStandaloneTranscribeFileAllowed = (fileName) => {
+    const name = String(fileName || '').toLowerCase();
+    return ['.mp3', '.wav', '.m4a', '.ogg', '.mp4', '.mpeg', '.webm'].some((ext) => name.endsWith(ext));
+  };
+
+  const copyTranscriptionToClipboard = async () => {
+    const text = normalizeLine(transcriptionText?.value || '');
+    if (!text) {
+      showToast('Não há texto para copiar ainda.', 'warn');
+      return;
+    }
+
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(text);
+      } else if (transcriptionText) {
+        transcriptionText.select();
+        document.execCommand('copy');
+      }
+      showToast('Texto copiado para a área de transferência.', 'success');
+    } catch {
+      showToast('Não foi possível copiar o texto automaticamente.', 'error');
+    }
+  };
+
+  const handleStandaloneTranscription = async (file) => {
+    if (!file) return;
+    if (!isStandaloneTranscribeFileAllowed(file.name)) {
+      showToast('Formato não suportado. Use MP3, WAV, M4A, OGG, MP4, MPEG ou WEBM.', 'error');
+      return;
+    }
+
+    if (transcribeResult) {
+      transcribeResult.hidden = true;
+    }
+    if (transcriptionText) {
+      transcriptionText.value = '';
+    }
+
+    setTranscribeBusy(true, `Processando: ${file.name}`);
+
+    try {
+      const fd = new FormData();
+      fd.set('action', 'pdfw_standalone_transcribe');
+      fd.set('nonce', importNonce);
+      fd.set('audio_file', file);
+      if (whisperUrlInput && normalizeLine(whisperUrlInput.value || '')) {
+        fd.set('whisper_url', whisperUrlInput.value);
+      }
+
+      const response = await fetch(getAjaxUrl(), {
+        method: 'POST',
+        body: fd,
+        credentials: 'same-origin',
+      });
+
+      let payload = null;
+      try {
+        payload = await response.json();
+      } catch {
+        throw new Error('Resposta inválida da API de transcrição.');
+      }
+
+      if (!response.ok || !payload || payload.success !== true) {
+        throw new Error(extractError(payload, 'Falha na transcrição.'));
+      }
+
+      const text = normalizeLine(payload?.data?.text || '');
+      if (!text) {
+        throw new Error('A API respondeu sem texto transcrito.');
+      }
+
+      if (transcriptionText) {
+        transcriptionText.value = text;
+      }
+      if (transcribeResult) {
+        transcribeResult.hidden = false;
+      }
+      showToast('Transcrição concluída com sucesso.', 'success');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Erro ao transcrever arquivo.';
+      showToast(message, 'error');
+    } finally {
+      setTranscribeBusy(false, 'Clique ou arraste um arquivo aqui\n(MP3, WAV, M4A, OGG, MP4, MPEG, WEBM)');
+      if (transcribeLabel && transcribeDefaultLabelHtml) {
+        transcribeLabel.innerHTML = transcribeDefaultLabelHtml;
+      }
+      if (transcribeInput) {
+        transcribeInput.value = '';
+      }
+    }
   };
 
   const normalizeMediaKey = (value) => String(value || '')
@@ -1892,6 +2009,7 @@ Finalize com azeite extravirgem após o preparo.`;
       'tips',
       'drive_folder_url',
       'cover_image',
+      'whisper_url',
       'import_mode',
     ];
 
@@ -2193,6 +2311,40 @@ Finalize com azeite extravirgem após o preparo.`;
       if (event.key !== 'Enter') return;
       event.preventDefault();
       await runImport();
+    });
+  }
+
+  if (transcribeInput) {
+    transcribeInput.addEventListener('change', async (event) => {
+      const input = event.target;
+      if (!(input instanceof HTMLInputElement) || !input.files || !input.files[0]) {
+        return;
+      }
+      await handleStandaloneTranscription(input.files[0]);
+    });
+  }
+
+  if (transcribeDrop) {
+    transcribeDrop.addEventListener('dragover', (event) => {
+      event.preventDefault();
+      transcribeDrop.classList.add('is-dragover');
+    });
+    transcribeDrop.addEventListener('dragleave', () => {
+      transcribeDrop.classList.remove('is-dragover');
+    });
+    transcribeDrop.addEventListener('drop', async (event) => {
+      event.preventDefault();
+      transcribeDrop.classList.remove('is-dragover');
+      const files = event.dataTransfer?.files;
+      if (!files || !files.length) return;
+      await handleStandaloneTranscription(files[0]);
+    });
+  }
+
+  if (copyTranscribeBtn) {
+    copyTranscribeBtn.addEventListener('click', async (event) => {
+      event.preventDefault();
+      await copyTranscriptionToClipboard();
     });
   }
 

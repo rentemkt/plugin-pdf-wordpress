@@ -33,6 +33,7 @@
           <button type="button" class="pdfw-nav-item" data-target-section="importacao">Importação</button>
           <button type="button" class="pdfw-nav-item" data-target-section="receitas">Itens</button>
           <button type="button" class="pdfw-nav-item" data-target-section="extras">Extras</button>
+          <button type="button" class="pdfw-nav-item" data-target-section="transcricao">Laboratório de Transcrição</button>
           <button type="button" class="pdfw-nav-item" data-target-section="exportar">Exportar e Prévia</button>
         </nav>
       </aside>
@@ -104,13 +105,17 @@
             <section class="pdfw-card">
               <h2>Importação automática</h2>
               <label>Upload de arquivos
-                <input type="file" name="source_files[]" multiple accept=".txt,.md,.html,.htm,.docx,.pdf,.pptx">
+                <input type="file" name="source_files[]" multiple accept=".txt,.md,.html,.htm,.docx,.pdf,.pptx,.mp3,.wav,.m4a,.ogg">
               </label>
-              <p class="hint">Suporta: TXT, MD, HTML, DOCX, PPTX e PDF (PDF depende de parser instalado).</p>
+              <p class="hint">Suporta: TXT, MD, HTML, DOCX, PPTX, PDF e áudio (MP3, WAV, M4A, OGG).</p>
               <label>Link da pasta pública do Google Drive
                 <input type="url" name="drive_folder_url" value="<?php echo esc_attr((string) ($payload['drive_folder_url'] ?? '')); ?>" placeholder="https://drive.google.com/drive/folders/...">
               </label>
               <p class="hint">Importa subpastas automaticamente (até 4 níveis) e processa em lote para evitar timeout.</p>
+              <label>URL da API de Transcrição (Whisper)
+                <input type="url" name="whisper_url" value="<?php echo esc_attr((string) ($payload['whisper_url'] ?? PDFW_Ingestor::whisper_default_url())); ?>" placeholder="<?php echo esc_attr(PDFW_Ingestor::whisper_default_url()); ?>">
+              </label>
+              <p class="hint">Padrão: <code><?php echo esc_html(PDFW_Ingestor::whisper_default_url()); ?></code>. Deixe editável para cenários com IP/porta diferentes.</p>
               <label>Modo de importação
                 <select name="import_mode">
                   <option value="append" <?php selected((string) ($payload['import_mode'] ?? 'append'), 'append'); ?>>Somar com itens do editor</option>
@@ -183,6 +188,33 @@
               <textarea name="about" rows="10"><?php echo esc_textarea($payload['about']); ?></textarea>
             </section>
           </div>
+        </section>
+
+        <section class="pdfw-editor-section" data-section-id="transcricao">
+          <section class="pdfw-card">
+            <h2>Laboratório de Transcrição (Whisper AI)</h2>
+            <p class="hint">Ferramenta avulsa para transformar áudio/vídeo em texto. O conteúdo gerado aqui não vai para o ebook automaticamente.</p>
+
+            <div class="pdfw-transcribe-box">
+              <label class="pdfw-file-drop" id="pdfw-transcribe-drop">
+                <span class="dashicons dashicons-microphone-alt" style="font-size: 40px; height: 40px; width: 40px; margin-bottom: 10px;"></span>
+                <span id="pdfw-transcribe-label">Clique ou arraste um arquivo aqui<br>(MP3, WAV, M4A, OGG, MP4, MPEG, WEBM)</span>
+                <input type="file" id="pdfw-transcribe-input" accept=".mp3,.wav,.m4a,.ogg,.mp4,.mpeg,.webm" hidden>
+              </label>
+
+              <div id="pdfw-transcribe-progress" hidden>
+                <div class="pdfw-spinner"></div> Processando áudio... isso pode demorar em arquivos grandes.
+              </div>
+            </div>
+
+            <div class="pdfw-transcribe-result" id="pdfw-transcribe-result" hidden>
+              <div class="pdfw-card-header-actions">
+                <h3>Resultado da transcrição</h3>
+                <button type="button" class="button" id="pdfw-copy-transcription">Copiar texto</button>
+              </div>
+              <textarea id="pdfw-transcription-text" rows="15" class="pdfw-content-editor" readonly></textarea>
+            </div>
+          </section>
         </section>
 
         <section class="pdfw-editor-section" data-section-id="exportar">

@@ -9,10 +9,13 @@ class PDFW_Ingestor
     private const MAX_FILES = 80;
     private const MAX_DEPTH = 4;
     private const MAX_FILE_BYTES = 10 * 1024 * 1024;
+    private const MAX_AUDIO_FILE_BYTES = 200 * 1024 * 1024;
     private const IMAGE_INLINE_MAX_BYTES = 500 * 1024;
     private const IMAGE_INLINE_MAX_COUNT = 16;
     private const IMAGE_INLINE_TOTAL_BYTES = 6 * 1024 * 1024;
     private const TEMP_IMAGE_TTL = 604800;
+    private const TRANSCRIBE_TIMEOUT = 600;
+    private const DEFAULT_WHISPER_URL = 'https://transcrever.rente.com.br/v1/audio/transcriptions';
 
     private static int $inline_image_count = 0;
     private static int $inline_image_total_bytes = 0;
@@ -47,6 +50,14 @@ class PDFW_Ingestor
         'jpeg' => true,
         'png' => true,
         'webp' => true,
+    ];
+
+    /** @var array<string, bool> */
+    private static array $supported_audio_ext_map = [
+        'mp3' => true,
+        'wav' => true,
+        'm4a' => true,
+        'ogg' => true,
     ];
 
     /**
@@ -125,6 +136,19 @@ class PDFW_Ingestor
         ];
     }
 
+    public static function whisper_default_url(): string
+    {
+        return self::DEFAULT_WHISPER_URL;
+    }
+
+    /**
+     * @param array<int, string> $logs
+     */
+    public static function transcribe_media(string $file_path, array &$logs): string
+    {
+        return self::transcribe_audio($file_path, $logs);
+    }
+
     /**
      * @return array<int, array{name: string, tmp_name: string}>
      */
@@ -167,7 +191,14 @@ class PDFW_Ingestor
     private static function parse_file_from_path(string $path, string $name, array &$logs): array
     {
         $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
-        if ($ext === '' || (! isset(self::$supported_text_ext_map[$ext]) && ! isset(self::$supported_image_ext_map[$ext]))) {
+        if (
+            $ext === ''
+            || (
+                ! isset(self::$supported_text_ext_map[$ext])
+                && ! isset(self::$supported_image_ext_map[$ext])
+                && ! isset(self::$supported_audio_ext_map[$ext])
+            )
+        ) {
             $logs[] = "Formato não suportado: {$name}";
             return [
                 'recipes' => [],
@@ -191,6 +222,63 @@ class PDFW_Ingestor
                     'kind' => $image_entry ? 'image' : 'error',
                     'recipes_count' => 0,
                     'note' => $image_entry ? 'Imagem importada' : 'Falha ao processar imagem',
+                ],
+            ];
+        }
+
+        if (isset(self::$supported_audio_ext_map[$ext])) {
+            $size = @filesize($path);
+            if (is_int($size) && $size > self::MAX_AUDIO_FILE_BYTES) {
+                $logs[] = "Áudio muito grande ignorado ({$name})";
+                return [
+                    'recipes' => [],
+                    'image_entry' => null,
+                    'audit' => [
+                        'name' => $name,
+                        'kind' => 'skip',
+                        'recipes_count' => 0,
+                        'note' => 'Áudio muito grande',
+                    ],
+                ];
+            }
+
+            $text = self::transcribe_audio($path, $logs);
+            if (trim($text) === '') {
+                $logs[] = "Não foi possível transcrever áudio: {$name}";
+                return [
+                    'recipes' => [],
+                    'image_entry' => null,
+                    'audit' => [
+                        'name' => $name,
+                        'kind' => 'error',
+                        'recipes_count' => 0,
+                        'note' => 'Falha na transcrição de áudio',
+                    ],
+                ];
+            }
+
+            $parsed = self::classify_text_content($text, $name, $logs);
+            if (! $parsed['recipes']) {
+                return [
+                    'recipes' => [],
+                    'image_entry' => null,
+                    'audit' => [
+                        'name' => $name,
+                        'kind' => 'skip',
+                        'recipes_count' => 0,
+                        'note' => 'Sem conteúdo detectável',
+                    ],
+                ];
+            }
+
+            return [
+                'recipes' => $parsed['recipes'],
+                'image_entry' => null,
+                'audit' => [
+                    'name' => $name,
+                    'kind' => $parsed['kind'],
+                    'recipes_count' => count($parsed['recipes']),
+                    'note' => $parsed['note'],
                 ],
             ];
         }
@@ -239,39 +327,28 @@ class PDFW_Ingestor
             ];
         }
 
-        $recipes = self::extract_recipes_from_text($text, pathinfo($name, PATHINFO_FILENAME));
-        $kind = 'recipe';
-        $note = count($recipes) === 1 ? '1 receita importada' : (count($recipes) . ' receitas importadas');
-
-        if (! $recipes) {
-            $recipes = self::extract_generic_content($text, pathinfo($name, PATHINFO_FILENAME));
-            if (! $recipes) {
-                $logs[] = "Sem conteúdo detectável em: {$name}";
-                return [
-                    'recipes' => [],
-                    'image_entry' => null,
-                    'audit' => [
-                        'name' => $name,
-                        'kind' => 'skip',
-                        'recipes_count' => 0,
-                        'note' => 'Sem conteúdo detectável',
-                    ],
-                ];
-            }
-
-            $kind = 'generic';
-            $note = count($recipes) === 1 ? '1 item genérico importado' : (count($recipes) . ' itens genéricos importados');
-            $logs[] = "Conteúdo genérico detectado em: {$name}";
+        $parsed = self::classify_text_content($text, $name, $logs);
+        if (! $parsed['recipes']) {
+            return [
+                'recipes' => [],
+                'image_entry' => null,
+                'audit' => [
+                    'name' => $name,
+                    'kind' => 'skip',
+                    'recipes_count' => 0,
+                    'note' => 'Sem conteúdo detectável',
+                ],
+            ];
         }
 
         return [
-            'recipes' => $recipes,
+            'recipes' => $parsed['recipes'],
             'image_entry' => null,
             'audit' => [
                 'name' => $name,
-                'kind' => $kind,
-                'recipes_count' => count($recipes),
-                'note' => $note,
+                'kind' => $parsed['kind'],
+                'recipes_count' => count($parsed['recipes']),
+                'note' => $parsed['note'],
             ],
         ];
     }
@@ -509,6 +586,7 @@ class PDFW_Ingestor
             $name_ext !== ''
             && ! isset(self::$supported_text_ext_map[$name_ext])
             && ! isset(self::$supported_image_ext_map[$name_ext])
+            && ! isset(self::$supported_audio_ext_map[$name_ext])
         ) {
             return [
                 'success' => true,
@@ -840,16 +918,37 @@ class PDFW_Ingestor
             } elseif (strpos($ctype, 'image/webp') !== false) {
                 $ext = 'webp';
                 $name .= '.webp';
+            } elseif (strpos($ctype, 'audio/mpeg') !== false || strpos($ctype, 'audio/mp3') !== false) {
+                $ext = 'mp3';
+                $name .= '.mp3';
+            } elseif (strpos($ctype, 'audio/wav') !== false || strpos($ctype, 'audio/x-wav') !== false) {
+                $ext = 'wav';
+                $name .= '.wav';
+            } elseif (
+                strpos($ctype, 'audio/mp4') !== false
+                || strpos($ctype, 'audio/x-m4a') !== false
+                || strpos($ctype, 'audio/m4a') !== false
+            ) {
+                $ext = 'm4a';
+                $name .= '.m4a';
+            } elseif (strpos($ctype, 'audio/ogg') !== false) {
+                $ext = 'ogg';
+                $name .= '.ogg';
             } else {
                 $ext = 'txt';
                 $name .= '.txt';
             }
         }
 
-        if (! isset(self::$supported_text_ext_map[$ext]) && ! isset(self::$supported_image_ext_map[$ext])) {
+        if (
+            ! isset(self::$supported_text_ext_map[$ext])
+            && ! isset(self::$supported_image_ext_map[$ext])
+            && ! isset(self::$supported_audio_ext_map[$ext])
+        ) {
             return null;
         }
-        if (strlen($body) > self::MAX_FILE_BYTES) {
+        $max_allowed = isset(self::$supported_audio_ext_map[$ext]) ? self::MAX_AUDIO_FILE_BYTES : self::MAX_FILE_BYTES;
+        if (strlen($body) > $max_allowed) {
             $logs[] = "Arquivo do Drive muito grande ignorado: {$name}";
             return null;
         }
@@ -871,17 +970,225 @@ class PDFW_Ingestor
             return [];
         }
 
+        if (isset(self::$supported_audio_ext_map[$ext])) {
+            if (strlen($content) > self::MAX_AUDIO_FILE_BYTES) {
+                $logs[] = "Áudio muito grande ignorado ({$name})";
+                return [];
+            }
+
+            $suffix = '.' . preg_replace('/[^a-z0-9]/', '', strtolower($ext));
+            if ($suffix === '.') {
+                $suffix = '.audio';
+            }
+            $tmp = self::write_temp_file($content, $suffix);
+            if ($tmp === '') {
+                $logs[] = "Não foi possível preparar áudio temporário para transcrição ({$name})";
+                return [];
+            }
+
+            $text = self::transcribe_audio($tmp, $logs);
+            @unlink($tmp);
+            if (trim($text) === '') {
+                return [];
+            }
+
+            $parsed = self::classify_text_content($text, $name, $logs);
+            return $parsed['recipes'];
+        }
+
         $text = self::extract_text_from_blob($content, $ext, $logs);
         if (trim($text) === '') {
             return [];
         }
 
-        $recipes = self::extract_recipes_from_text($text, pathinfo($name, PATHINFO_FILENAME));
+        $parsed = self::classify_text_content($text, $name, $logs);
+        return $parsed['recipes'];
+    }
+
+    /**
+     * @param array<int, string> $logs
+     * @return array{recipes: array<int, array<string, mixed>>, kind: string, note: string}
+     */
+    private static function classify_text_content(string $text, string $name, array &$logs): array
+    {
+        $fallback_title = pathinfo($name, PATHINFO_FILENAME);
+        $recipes = self::extract_recipes_from_text($text, $fallback_title);
         if ($recipes) {
-            return $recipes;
+            return [
+                'recipes' => $recipes,
+                'kind' => 'recipe',
+                'note' => count($recipes) === 1 ? '1 receita importada' : (count($recipes) . ' receitas importadas'),
+            ];
         }
 
-        return self::extract_generic_content($text, pathinfo($name, PATHINFO_FILENAME));
+        $recipes = self::extract_generic_content($text, $fallback_title);
+        if ($recipes) {
+            $logs[] = "Conteúdo genérico detectado em: {$name}";
+            return [
+                'recipes' => $recipes,
+                'kind' => 'generic',
+                'note' => count($recipes) === 1 ? '1 item genérico importado' : (count($recipes) . ' itens genéricos importados'),
+            ];
+        }
+
+        $logs[] = "Sem conteúdo detectável em: {$name}";
+        return [
+            'recipes' => [],
+            'kind' => 'skip',
+            'note' => 'Sem conteúdo detectável',
+        ];
+    }
+
+    private static function whisper_api_url(): string
+    {
+        $saved = get_option('pdfw_whisper_url', '');
+        $saved = is_string($saved) ? trim($saved) : '';
+        $clean = self::sanitize_whisper_url($saved);
+        if ($clean !== '') {
+            return $clean;
+        }
+        return self::DEFAULT_WHISPER_URL;
+    }
+
+    private static function sanitize_whisper_url(string $value): string
+    {
+        $value = trim($value);
+        if ($value === '') {
+            return '';
+        }
+
+        $clean = esc_url_raw($value);
+        if ($clean === '') {
+            return '';
+        }
+
+        if (preg_match('#^https?://[^\\s]+$#i', $clean) !== 1) {
+            return '';
+        }
+
+        return $clean;
+    }
+
+    /**
+     * @param array<int, string> $logs
+     */
+    private static function transcribe_audio(string $file_path, array &$logs): string
+    {
+        if (! is_file($file_path) || ! is_readable($file_path)) {
+            $logs[] = 'Arquivo de áudio não encontrado para transcrição.';
+            return '';
+        }
+
+        $size = @filesize($file_path);
+        if (is_int($size) && $size > self::MAX_AUDIO_FILE_BYTES) {
+            $logs[] = 'Arquivo de áudio excede o limite suportado para transcrição.';
+            return '';
+        }
+
+        if (! function_exists('curl_init') || ! function_exists('curl_file_create')) {
+            $logs[] = 'Extensão cURL não disponível no servidor para transcrição.';
+            return '';
+        }
+
+        $url = self::whisper_api_url();
+        $ext = strtolower(pathinfo($file_path, PATHINFO_EXTENSION));
+        $mime = self::guess_audio_mime($file_path, $ext);
+        $curl_file = curl_file_create($file_path, $mime, basename($file_path));
+
+        $ch = curl_init($url);
+        if ($ch === false) {
+            $logs[] = 'Não foi possível inicializar conexão de transcrição.';
+            return '';
+        }
+
+        $payload = [
+            'file' => $curl_file,
+            'model' => 'medium',
+            'language' => 'pt',
+            'response_format' => 'text',
+        ];
+
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => $payload,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => 30,
+            CURLOPT_TIMEOUT => self::TRANSCRIBE_TIMEOUT,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_MAXREDIRS => 2,
+            CURLOPT_HTTPHEADER => [
+                'Accept: text/plain, application/json',
+            ],
+        ]);
+
+        $response_body = curl_exec($ch);
+        $curl_error = curl_error($ch);
+        $http_code = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        curl_close($ch);
+
+        if ($response_body === false) {
+            $logs[] = 'Falha ao chamar API de transcrição: ' . $curl_error;
+            return '';
+        }
+
+        $raw = trim((string) $response_body);
+        if ($http_code < 200 || $http_code >= 300) {
+            $snippet = mb_substr($raw, 0, 300);
+            $logs[] = 'API de transcrição retornou HTTP ' . $http_code . ($snippet !== '' ? (': ' . $snippet) : '.');
+            return '';
+        }
+
+        if ($raw === '') {
+            $logs[] = 'API de transcrição retornou conteúdo vazio.';
+            return '';
+        }
+
+        if ($raw[0] === '{' || $raw[0] === '[') {
+            $json = json_decode($raw, true);
+            if (is_array($json)) {
+                if (! empty($json['text']) && is_string($json['text'])) {
+                    return self::normalize_text((string) $json['text']);
+                }
+                if (! empty($json['error']) && is_array($json['error']) && ! empty($json['error']['message'])) {
+                    $logs[] = 'Erro da API de transcrição: ' . sanitize_text_field((string) $json['error']['message']);
+                    return '';
+                }
+            }
+        }
+
+        return self::normalize_text($raw);
+    }
+
+    private static function guess_audio_mime(string $file_path, string $ext): string
+    {
+        if (function_exists('mime_content_type')) {
+            $detected = @mime_content_type($file_path);
+            if (is_string($detected) && strpos($detected, 'audio/') === 0) {
+                return $detected;
+            }
+        }
+
+        $ext = strtolower($ext);
+        if ($ext === 'mp3') {
+            return 'audio/mpeg';
+        }
+        if ($ext === 'wav') {
+            return 'audio/wav';
+        }
+        if ($ext === 'm4a') {
+            return 'audio/mp4';
+        }
+        if ($ext === 'ogg') {
+            return 'audio/ogg';
+        }
+        if ($ext === 'mp4') {
+            return 'video/mp4';
+        }
+        if ($ext === 'webm') {
+            return 'video/webm';
+        }
+
+        return 'application/octet-stream';
     }
 
     private static function should_skip_by_name(string $name): bool

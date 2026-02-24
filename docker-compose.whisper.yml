@@ -1,0 +1,16 @@
+version: '3.8'
+services:
+  whisper:
+    image: fedirz/faster-whisper-server:latest-cpu
+    container_name: whisper-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - WHISPER_MODEL=medium
+      - WHISPER_COMPUTE_TYPE=int8
+      - WHISPER_DEVICE=cpu
+    volumes:
+      - whisper_models:/root/.cache/huggingface
+volumes:
+  whisper_models:

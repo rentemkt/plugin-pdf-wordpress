@@ -7,6 +7,7 @@ if (! defined('ABSPATH')) {
 class PDFW_Admin_Page
 {
     private const OPTION_KEY = 'pdfw_last_payload';
+    private const WHISPER_OPTION_KEY = 'pdfw_whisper_url';
     private const NOTICE_KEY = 'pdfw_notice';
     private const PROJECTS_OPTION_KEY = 'pdfw_projects_store';
     private const PREVIEW_CACHE_PREFIX = 'pdfw_preview_cache_';
@@ -55,6 +56,13 @@ class PDFW_Admin_Page
         $defaults = PDFW_Renderer::default_payload();
         $saved = get_option(self::OPTION_KEY, []);
         $payload = wp_parse_args(is_array($saved) ? $saved : [], $defaults);
+        $payload['whisper_url'] = $this->sanitize_whisper_url((string) ($payload['whisper_url'] ?? ''));
+        if ($payload['whisper_url'] === '') {
+            $payload['whisper_url'] = $this->sanitize_whisper_url((string) get_option(self::WHISPER_OPTION_KEY, ''));
+        }
+        if ($payload['whisper_url'] === '') {
+            $payload['whisper_url'] = PDFW_Ingestor::whisper_default_url();
+        }
         $notice = get_transient(self::NOTICE_KEY);
         if (is_string($notice) && $notice !== '') {
             delete_transient(self::NOTICE_KEY);
@@ -180,6 +188,75 @@ class PDFW_Admin_Page
         }
 
         wp_send_json_success($response);
+    }
+
+    public function handle_standalone_transcribe(): void
+    {
+        if (! current_user_can('manage_options')) {
+            wp_send_json_error(['message' => 'Sem permissão.'], 403);
+        }
+
+        check_ajax_referer('pdfw_import', 'nonce');
+
+        $whisper_url_override = isset($_POST['whisper_url']) ? wp_unslash((string) $_POST['whisper_url']) : '';
+        $whisper_url_override = $this->sanitize_whisper_url($whisper_url_override);
+        if ($whisper_url_override !== '') {
+            update_option(self::WHISPER_OPTION_KEY, $whisper_url_override, false);
+        }
+
+        if (! isset($_FILES['audio_file']) || ! is_array($_FILES['audio_file'])) {
+            wp_send_json_error(['message' => 'Nenhum arquivo enviado.'], 400);
+        }
+
+        $file = $_FILES['audio_file'];
+        $name = sanitize_file_name((string) ($file['name'] ?? ''));
+        $tmp_name = (string) ($file['tmp_name'] ?? '');
+        $error = isset($file['error']) ? (int) $file['error'] : UPLOAD_ERR_NO_FILE;
+        $size = isset($file['size']) ? (int) $file['size'] : 0;
+
+        if ($error !== UPLOAD_ERR_OK || $tmp_name === '' || ! is_uploaded_file($tmp_name)) {
+            wp_send_json_error(['message' => 'Falha no upload do arquivo para transcrição.'], 400);
+        }
+
+        $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+        $allowed_ext = ['mp3', 'wav', 'm4a', 'ogg', 'mp4', 'mpeg', 'webm'];
+        if (! in_array($ext, $allowed_ext, true)) {
+            wp_send_json_error(['message' => 'Formato não suportado para transcrição.'], 400);
+        }
+        if ($size <= 0) {
+            wp_send_json_error(['message' => 'Arquivo enviado está vazio.'], 400);
+        }
+
+        $tmp_path = wp_tempnam($name !== '' ? $name : 'audio');
+        if (! is_string($tmp_path) || $tmp_path === '') {
+            wp_send_json_error(['message' => 'Não foi possível preparar arquivo temporário.'], 500);
+        }
+        if ($ext !== '' && substr($tmp_path, -strlen('.' . $ext)) !== '.' . $ext) {
+            $tmp_with_ext = $tmp_path . '.' . $ext;
+            @rename($tmp_path, $tmp_with_ext);
+            $tmp_path = $tmp_with_ext;
+        }
+        if (@move_uploaded_file($tmp_name, $tmp_path) !== true) {
+            @unlink($tmp_path);
+            wp_send_json_error(['message' => 'Erro ao salvar arquivo temporário para transcrição.'], 500);
+        }
+
+        $logs = [];
+        $text = PDFW_Ingestor::transcribe_media($tmp_path, $logs);
+        @unlink($tmp_path);
+
+        if (trim($text) === '') {
+            $message = 'Falha na transcrição.';
+            if ($logs) {
+                $message .= ' ' . implode(' | ', array_map('sanitize_text_field', $logs));
+            }
+            wp_send_json_error(['message' => $message], 500);
+        }
+
+        wp_send_json_success([
+            'text' => $text,
+            'logs' => array_values(array_map('sanitize_text_field', $logs)),
+        ]);
     }
 
     public function handle_generate(): void
@@ -424,10 +501,17 @@ class PDFW_Admin_Page
         $tips_raw = isset($_POST['tips']) ? wp_unslash((string) $_POST['tips']) : '';
         $drive_folder_url = isset($_POST['drive_folder_url']) ? wp_unslash((string) $_POST['drive_folder_url']) : '';
         $cover_image = isset($_POST['cover_image']) ? wp_unslash((string) $_POST['cover_image']) : '';
+        $whisper_url = isset($_POST['whisper_url']) ? wp_unslash((string) $_POST['whisper_url']) : '';
         $import_mode = isset($_POST['import_mode']) ? sanitize_key((string) $_POST['import_mode']) : 'append';
         if (! in_array($import_mode, ['append', 'replace'], true)) {
             $import_mode = 'append';
         }
+
+        $whisper_url = $this->sanitize_whisper_url($whisper_url);
+        if ($whisper_url === '') {
+            $whisper_url = PDFW_Ingestor::whisper_default_url();
+        }
+        update_option(self::WHISPER_OPTION_KEY, $whisper_url, false);
 
         return [
             'title' => sanitize_text_field((string) ($_POST['title'] ?? 'Ebook')),
@@ -441,6 +525,7 @@ class PDFW_Admin_Page
             'tips' => trim($tips_raw),
             'drive_folder_url' => esc_url_raw(trim($drive_folder_url)),
             'cover_image' => $this->sanitize_image_source($cover_image),
+            'whisper_url' => $whisper_url,
             'import_mode' => $import_mode,
         ];
     }
@@ -461,6 +546,25 @@ class PDFW_Admin_Page
             }
         }
         return esc_url_raw($value);
+    }
+
+    private function sanitize_whisper_url(string $value): string
+    {
+        $value = trim($value);
+        if ($value === '') {
+            return '';
+        }
+
+        $clean = esc_url_raw($value);
+        if ($clean === '') {
+            return '';
+        }
+
+        if (preg_match('#^https?://[^\\s]+$#i', $clean) !== 1) {
+            return '';
+        }
+
+        return $clean;
     }
 
     private function sanitize_local_image_source(string $value): string
@@ -578,6 +682,7 @@ class PDFW_Admin_Page
             'tips' => trim((string) ($input['tips'] ?? '')),
             'drive_folder_url' => esc_url_raw(trim((string) ($input['drive_folder_url'] ?? ''))),
             'cover_image' => $this->sanitize_image_source((string) ($input['cover_image'] ?? '')),
+            'whisper_url' => $this->sanitize_whisper_url((string) ($input['whisper_url'] ?? '')),
             'import_mode' => sanitize_key((string) ($input['import_mode'] ?? 'append')),
         ];
 
@@ -586,6 +691,12 @@ class PDFW_Admin_Page
         }
         if (! in_array($payload['import_mode'], ['append', 'replace'], true)) {
             $payload['import_mode'] = 'append';
+        }
+        if ($payload['whisper_url'] === '') {
+            $payload['whisper_url'] = $this->sanitize_whisper_url((string) get_option(self::WHISPER_OPTION_KEY, ''));
+        }
+        if ($payload['whisper_url'] === '') {
+            $payload['whisper_url'] = PDFW_Ingestor::whisper_default_url();
         }
 
         return $payload;
