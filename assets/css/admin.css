@@ -167,7 +167,7 @@
 
 .pdfw-projects-row {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: 1fr 1fr;
   gap: 10px;
   margin-bottom: 10px;
 }
@@ -178,6 +178,92 @@
 
 #pdfw-project-status {
   margin-top: 10px;
+}
+
+.pdfw-projects-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.pdfw-projects-empty {
+  grid-column: 1 / -1;
+  border: 1px dashed #c3c4c7;
+  border-radius: 8px;
+  padding: 12px;
+  color: #646970;
+  background: #fff;
+  text-align: center;
+}
+
+.pdfw-project-card {
+  border: 1px solid #dcdcde;
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+  min-height: 110px;
+  position: relative;
+}
+
+.pdfw-project-card:hover {
+  border-color: #2271b1;
+  box-shadow: 0 6px 12px rgba(34, 113, 177, 0.12);
+  transform: translateY(-1px);
+}
+
+.pdfw-project-card.is-active {
+  border-color: #2271b1;
+  background: #f0f6fc;
+}
+
+.pdfw-project-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #1d2327;
+  line-height: 1.3;
+  word-break: break-word;
+}
+
+.pdfw-project-client {
+  font-size: 11px;
+  color: #646970;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.pdfw-project-date {
+  margin-top: auto;
+  font-size: 11px;
+  color: #8c8f94;
+}
+
+.pdfw-project-delete {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  border: 0;
+  background: transparent;
+  color: #b32d2e;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.pdfw-project-card:hover .pdfw-project-delete {
+  opacity: 0.75;
+}
+
+.pdfw-project-card:hover .pdfw-project-delete:hover {
+  opacity: 1;
 }
 
 .pdfw-advanced-raw {
@@ -214,6 +300,31 @@
 
 #pdfw-import-status.is-busy {
   color: #1f4f96;
+}
+
+.pdfw-import-progress {
+  margin-top: 8px;
+}
+
+.pdfw-import-progress-track {
+  height: 8px;
+  border-radius: 999px;
+  background: #e8eaed;
+  overflow: hidden;
+}
+
+.pdfw-import-progress-bar {
+  width: 0%;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #2271b1, #4f8fd9);
+  transition: width 0.22s ease;
+}
+
+.pdfw-import-progress-label {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #50575e;
 }
 
 .pdfw-import-audit-card {
@@ -282,6 +393,11 @@
   color: #0f5132;
 }
 
+.pdfw-audit-kind.is-generic {
+  background: #fff3cd;
+  color: #664d03;
+}
+
 .pdfw-audit-kind.is-image {
   background: #dbeafe;
   color: #1e3a8a;
@@ -303,6 +419,14 @@
   padding: 12px;
   margin-bottom: 10px;
   background: #fff;
+}
+
+.pdfw-recipe-card.is-recipe {
+  border-left: 4px solid #2271b1;
+}
+
+.pdfw-recipe-card.is-generic {
+  border-left: 4px solid #7a8f4f;
 }
 
 .pdfw-recipe-card[draggable="true"] {
@@ -427,6 +551,11 @@
   text-overflow: ellipsis;
 }
 
+.pdfw-recipe-name small {
+  color: #646970;
+  font-weight: 500;
+}
+
 .pdfw-recipe-actions {
   display: flex;
   align-items: center;
@@ -513,6 +642,80 @@
   border: 1px solid #dcdcde;
   border-radius: 8px;
   background: #fff;
+}
+
+.pdfw-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(0, 0, 0, 0.18);
+  border-top-color: #2271b1;
+  border-radius: 50%;
+  animation: pdfw-spin 0.7s linear infinite;
+  vertical-align: text-bottom;
+  margin-right: 6px;
+}
+
+@keyframes pdfw-spin {
+  to { transform: rotate(360deg); }
+}
+
+.pdfw-toast-container {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.pdfw-toast {
+  min-width: 280px;
+  max-width: 420px;
+  border-radius: 8px;
+  background: #fff;
+  color: #1d2327;
+  border-left: 4px solid #2271b1;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.16);
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.35;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  pointer-events: auto;
+  animation: pdfw-toast-in 0.2s ease-out;
+}
+
+.pdfw-toast.is-success { border-left-color: #0f5132; }
+.pdfw-toast.is-error { border-left-color: #842029; }
+.pdfw-toast.is-info { border-left-color: #2271b1; }
+.pdfw-toast.is-warn { border-left-color: #8a6d1b; }
+
+.pdfw-toast-close {
+  border: 0;
+  background: transparent;
+  color: #646970;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+
+.pdfw-toast.is-leaving {
+  animation: pdfw-toast-out 0.2s ease-in forwards;
+}
+
+@keyframes pdfw-toast-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pdfw-toast-out {
+  to { opacity: 0; transform: translateY(12px); }
 }
 
 @media (max-width: 1200px) {

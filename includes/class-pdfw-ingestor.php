@@ -30,6 +30,7 @@ class PDFW_Ingestor
         'htm' => true,
         'docx' => true,
         'pdf' => true,
+        'pptx' => true,
     ];
 
     /** @var array<string, bool> */
@@ -229,18 +230,28 @@ class PDFW_Ingestor
         }
 
         $recipes = self::extract_recipes_from_text($text, pathinfo($name, PATHINFO_FILENAME));
+        $kind = 'recipe';
+        $note = count($recipes) === 1 ? '1 receita importada' : (count($recipes) . ' receitas importadas');
+
         if (! $recipes) {
-            $logs[] = "Sem receita detectada em: {$name}";
-            return [
-                'recipes' => [],
-                'image_entry' => null,
-                'audit' => [
-                    'name' => $name,
-                    'kind' => 'skip',
-                    'recipes_count' => 0,
-                    'note' => 'Sem receita detectada',
-                ],
-            ];
+            $recipes = self::extract_generic_content($text, pathinfo($name, PATHINFO_FILENAME));
+            if (! $recipes) {
+                $logs[] = "Sem conteúdo detectável em: {$name}";
+                return [
+                    'recipes' => [],
+                    'image_entry' => null,
+                    'audit' => [
+                        'name' => $name,
+                        'kind' => 'skip',
+                        'recipes_count' => 0,
+                        'note' => 'Sem conteúdo detectável',
+                    ],
+                ];
+            }
+
+            $kind = 'generic';
+            $note = count($recipes) === 1 ? '1 item genérico importado' : (count($recipes) . ' itens genéricos importados');
+            $logs[] = "Conteúdo genérico detectado em: {$name}";
         }
 
         return [
@@ -248,9 +259,9 @@ class PDFW_Ingestor
             'image_entry' => null,
             'audit' => [
                 'name' => $name,
-                'kind' => 'recipe',
+                'kind' => $kind,
                 'recipes_count' => count($recipes),
-                'note' => count($recipes) === 1 ? '1 receita importada' : (count($recipes) . ' receitas importadas'),
+                'note' => $note,
             ],
         ];
     }
@@ -371,14 +382,20 @@ class PDFW_Ingestor
                     $logs
                 );
                 if ($recipes_from_file) {
+                    $first_recipe = is_array($recipes_from_file[0] ?? null) ? $recipes_from_file[0] : [];
+                    $is_generic = ! empty($first_recipe['isGeneric']) || ! empty($first_recipe['is_generic']);
+                    $kind = $is_generic ? 'generic' : 'recipe';
+                    $note = $is_generic
+                        ? (count($recipes_from_file) === 1 ? '1 item genérico importado' : (count($recipes_from_file) . ' itens genéricos importados'))
+                        : (count($recipes_from_file) === 1 ? '1 receita importada' : (count($recipes_from_file) . ' receitas importadas'));
                     $recipes = array_merge($recipes, $recipes_from_file);
                     $imported_files++;
                     $audit_items[] = [
                         'source' => 'drive',
                         'name' => $download['name'],
-                        'kind' => 'recipe',
+                        'kind' => $kind,
                         'recipes_count' => count($recipes_from_file),
-                        'note' => count($recipes_from_file) === 1 ? '1 receita importada' : (count($recipes_from_file) . ' receitas importadas'),
+                        'note' => $note,
                     ];
                 } else {
                     $audit_items[] = [
@@ -400,6 +417,162 @@ class PDFW_Ingestor
             'image_entries' => self::unique_image_entries($image_entries),
             'cover_image' => $cover_image,
             'audit_items' => $audit_items,
+        ];
+    }
+
+    /**
+     * Apenas lista os itens elegíveis da pasta do Drive para processamento em lote no frontend.
+     *
+     * @return array{ok: bool, items: array<int, array<string, string>>, logs: array<int, string>}
+     */
+    public static function scan_drive_structure(string $folder_url): array
+    {
+        $logs = [];
+        $items = [];
+        $folder_id = self::extract_drive_folder_id($folder_url);
+
+        if ($folder_id === '') {
+            return [
+                'ok' => false,
+                'items' => [],
+                'logs' => ['Link de pasta do Google Drive inválido.'],
+            ];
+        }
+
+        $visited = [];
+        self::crawl_drive_folder($folder_id, 0, $visited, $items, $logs);
+
+        if (count($items) > self::MAX_FILES) {
+            $items = array_slice($items, 0, self::MAX_FILES);
+            $logs[] = 'Limite de arquivos do Drive atingido. Parte do conteúdo foi ignorada.';
+        }
+
+        return [
+            'ok' => true,
+            'items' => array_values($items),
+            'logs' => $logs,
+        ];
+    }
+
+    /**
+     * Processa um item específico do Drive (chamado em loop via AJAX).
+     *
+     * @param array<string, string> $item
+     * @return array{
+     *   success: bool,
+     *   type?: string,
+     *   data?: array<string, mixed>|array<int, array<string, mixed>>,
+     *   logs: array<int, string>,
+     *   audit: array<string, mixed>
+     * }
+     */
+    public static function process_single_drive_item(array $item): array
+    {
+        $logs = [];
+        $name = trim((string) ($item['name'] ?? 'arquivo-drive'));
+        if ($name === '') {
+            $name = 'arquivo-drive';
+        }
+
+        if (self::should_skip_by_name($name)) {
+            return [
+                'success' => true,
+                'type' => 'content',
+                'data' => [],
+                'logs' => $logs,
+                'audit' => [
+                    'source' => 'drive',
+                    'name' => $name,
+                    'kind' => 'skip',
+                    'recipes_count' => 0,
+                    'note' => 'Arquivo não-receita ignorado',
+                ],
+            ];
+        }
+
+        $name_ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+        if (
+            $name_ext !== ''
+            && ! isset(self::$supported_text_ext_map[$name_ext])
+            && ! isset(self::$supported_image_ext_map[$name_ext])
+        ) {
+            return [
+                'success' => true,
+                'type' => 'content',
+                'data' => [],
+                'logs' => $logs,
+                'audit' => [
+                    'source' => 'drive',
+                    'name' => $name,
+                    'kind' => 'skip',
+                    'recipes_count' => 0,
+                    'note' => 'Formato não suportado',
+                ],
+            ];
+        }
+
+        $download = self::download_drive_item($item, $logs);
+        if (! $download) {
+            return [
+                'success' => false,
+                'logs' => $logs,
+                'audit' => [
+                    'source' => 'drive',
+                    'name' => $name,
+                    'kind' => 'error',
+                    'recipes_count' => 0,
+                    'note' => 'Falha no download ou arquivo indisponível',
+                ],
+            ];
+        }
+
+        if (isset(self::$supported_image_ext_map[$download['ext']])) {
+            $image_entry = self::build_image_entry_from_blob($download['content'], $download['name'], $download['ext'], $logs);
+            $ok = (bool) $image_entry;
+            return [
+                'success' => $ok,
+                'type' => 'image',
+                'data' => $image_entry ?: [],
+                'logs' => $logs,
+                'audit' => [
+                    'source' => 'drive',
+                    'name' => $download['name'],
+                    'kind' => $ok ? 'image' : 'error',
+                    'recipes_count' => 0,
+                    'note' => $ok ? 'Imagem importada' : 'Falha ao processar imagem',
+                ],
+            ];
+        }
+
+        $recipes = self::parse_file_blob($download['name'], $download['ext'], $download['content'], $logs);
+        $count = count($recipes);
+        $first = is_array($recipes[0] ?? null) ? $recipes[0] : [];
+        $is_generic = ! empty($first['isGeneric']) || ! empty($first['is_generic']);
+
+        $kind = 'skip';
+        $note = 'Sem conteúdo detectável';
+        if ($count > 0) {
+            if ($is_generic) {
+                $kind = 'generic';
+                $note = $count === 1 ? '1 item genérico importado' : ($count . ' itens genéricos importados');
+            } else {
+                $kind = 'recipe';
+                $note = $count === 1 ? '1 receita importada' : ($count . ' receitas importadas');
+            }
+        }
+
+        return [
+            'success' => true,
+            'type' => 'content',
+            'data' => $recipes,
+            'logs' => $logs,
+            'audit' => [
+                'source' => 'drive',
+                'name' => $download['name'],
+                'kind' => $kind,
+                'recipes_count' => $count,
+                'note' => $note,
+            ],
         ];
     }
 
@@ -522,6 +695,19 @@ class PDFW_Ingestor
                     'id' => $m[1],
                     'name' => $doc_name,
                 ];
+                continue;
+            }
+
+            if (preg_match('#https?://docs\.google\.com/presentation/d/([A-Za-z0-9_-]+)#', $href, $m)) {
+                $slide_name = $name !== '' ? $name : ('presentation-' . $m[1]);
+                if (strtolower(pathinfo($slide_name, PATHINFO_EXTENSION)) === '') {
+                    $slide_name .= '.pptx';
+                }
+                $files[] = [
+                    'kind' => 'gslides',
+                    'id' => $m[1],
+                    'name' => $slide_name,
+                ];
             }
         }
 
@@ -566,6 +752,8 @@ class PDFW_Ingestor
 
         if ($kind === 'gdoc') {
             $url = 'https://docs.google.com/document/d/' . rawurlencode($id) . '/export?format=txt';
+        } elseif ($kind === 'gslides') {
+            $url = 'https://docs.google.com/presentation/d/' . rawurlencode($id) . '/export/pptx';
         } else {
             $url = 'https://drive.google.com/uc?export=download&id=' . rawurlencode($id);
         }
@@ -604,6 +792,10 @@ class PDFW_Ingestor
             $ext = 'txt';
             $name .= '.txt';
         }
+        if ($ext === '' && $kind === 'gslides') {
+            $ext = 'pptx';
+            $name .= '.pptx';
+        }
         if ($ext === '') {
             $ctype = strtolower((string) wp_remote_retrieve_header($response, 'content-type'));
             if (strpos($ctype, 'html') !== false) {
@@ -615,6 +807,9 @@ class PDFW_Ingestor
             } elseif (strpos($ctype, 'wordprocessingml') !== false) {
                 $ext = 'docx';
                 $name .= '.docx';
+            } elseif (strpos($ctype, 'presentationml.presentation') !== false || strpos($ctype, 'vnd.ms-powerpoint') !== false) {
+                $ext = 'pptx';
+                $name .= '.pptx';
             } elseif (strpos($ctype, 'image/jpeg') !== false || strpos($ctype, 'image/jpg') !== false) {
                 $ext = 'jpg';
                 $name .= '.jpg';
@@ -660,7 +855,12 @@ class PDFW_Ingestor
             return [];
         }
 
-        return self::extract_recipes_from_text($text, pathinfo($name, PATHINFO_FILENAME));
+        $recipes = self::extract_recipes_from_text($text, pathinfo($name, PATHINFO_FILENAME));
+        if ($recipes) {
+            return $recipes;
+        }
+
+        return self::extract_generic_content($text, pathinfo($name, PATHINFO_FILENAME));
     }
 
     private static function should_skip_by_name(string $name): bool
@@ -707,6 +907,18 @@ class PDFW_Ingestor
                 return '';
             }
             $text = self::extract_docx_text($tmp);
+            if ($path_hint === '') {
+                @unlink($tmp);
+            }
+            return self::normalize_text($text);
+        }
+
+        if ($ext === 'pptx') {
+            $tmp = $path_hint !== '' ? $path_hint : self::write_temp_file($contents, '.pptx');
+            if ($tmp === '') {
+                return '';
+            }
+            $text = self::extract_pptx_text($tmp);
             if ($path_hint === '') {
                 @unlink($tmp);
             }
@@ -832,6 +1044,56 @@ class PDFW_Ingestor
         return html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
     }
 
+    private static function extract_pptx_text(string $path): string
+    {
+        if (! class_exists('ZipArchive')) {
+            return '';
+        }
+
+        $zip = new ZipArchive();
+        if ($zip->open($path) !== true) {
+            return '';
+        }
+
+        $slide_files = [];
+        $num_files = (int) $zip->numFiles;
+        for ($i = 0; $i < $num_files; $i++) {
+            $entry_name = (string) $zip->getNameIndex($i);
+            if (preg_match('#^ppt/slides/slide(\d+)\.xml$#i', $entry_name, $match) !== 1) {
+                continue;
+            }
+            $slide_files[(int) ($match[1] ?? 0)] = $entry_name;
+        }
+
+        if (! $slide_files) {
+            $zip->close();
+            return '';
+        }
+
+        ksort($slide_files, SORT_NUMERIC);
+        $chunks = [];
+
+        foreach ($slide_files as $slide_no => $slide_file) {
+            $xml = $zip->getFromName($slide_file);
+            if (! is_string($xml) || $xml === '') {
+                continue;
+            }
+
+            $xml = str_replace(['</a:p>', '</a:br>', '<a:br/>', '<a:br />'], ["\n", "\n", "\n", "\n"], $xml);
+            $text = wp_strip_all_tags((string) $xml);
+            $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            $text = trim((string) preg_replace("/\\n{3,}/", "\n\n", $text));
+            if ($text === '') {
+                continue;
+            }
+
+            $chunks[] = 'Slide ' . $slide_no . ":\n" . $text;
+        }
+
+        $zip->close();
+        return implode("\n\n", $chunks);
+    }
+
     private static function normalize_text(string $text): string
     {
         $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
@@ -914,6 +1176,64 @@ class PDFW_Ingestor
             'ingredients' => $ingredients,
             'steps' => $steps,
             'tip' => trim($tip),
+        ]];
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private static function extract_generic_content(string $text, string $fallback_title): array
+    {
+        $text = self::normalize_text($text);
+        if ($text === '') {
+            return [];
+        }
+
+        $lines = array_values(array_filter(array_map('trim', explode("\n", $text)), static function ($line) {
+            return $line !== '';
+        }));
+        if (! $lines) {
+            return [];
+        }
+
+        $title = trim($fallback_title) !== '' ? trim($fallback_title) : 'Conteúdo';
+        $body_lines = $lines;
+        $first = (string) ($lines[0] ?? '');
+
+        if (
+            mb_strlen($first) >= 3
+            && mb_strlen($first) <= 140
+            && ! preg_match('/^(ingredientes?|modo\\s+de\\s+preparo|preparo|dica|categoria|descri(?:c|ç)(?:a|ã)o|tempo|por(?:c|ç)(?:o|õ)es?|dificuldade|imagem|informa(?:c|ç)(?:a|ã)o nutricional|calorias?|carboidratos?|prote(?:i|í)nas?|gorduras?|fibras?)\\b/iu', $first)
+        ) {
+            $title = $first;
+            $body_lines = array_slice($lines, 1);
+        }
+
+        $body = trim(implode("\n", $body_lines));
+        if ($body === '') {
+            $body = $text;
+        }
+
+        return [[
+            'title' => $title,
+            'category' => 'Geral',
+            'description' => $body,
+            'tempo' => '',
+            'porcoes' => '',
+            'dificuldade' => '',
+            'image' => '',
+            'ingredients' => [],
+            'steps' => [],
+            'tip' => '',
+            'nutrition' => [
+                'kcal' => '',
+                'carb' => '',
+                'prot' => '',
+                'fat' => '',
+                'fiber' => '',
+            ],
+            'isGeneric' => true,
+            'is_generic' => true,
         ]];
     }
 

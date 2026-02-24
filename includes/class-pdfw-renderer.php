@@ -104,12 +104,13 @@ class PDFW_Renderer
             $toc_html .= '<div class="toc-category">' . self::h($category['title']) . '</div>';
             $page_cursor++;
             foreach ($category['recipes'] as $recipe) {
+                $is_generic = ! empty($recipe['is_generic']) || ! empty($recipe['isGeneric']);
                 $toc_html .= '<div class="toc-entry"><span class="toc-name">'
                     . self::h($global_index . '. ' . (string) ($recipe['title'] ?? 'Receita'))
                     . '</span><span class="toc-dots"></span><span class="toc-page">'
                     . $page_cursor
                     . '</span></div>';
-                $page_cursor += 2;
+                $page_cursor += $is_generic ? 1 : 2;
                 $global_index++;
             }
         }
@@ -137,6 +138,43 @@ class PDFW_Renderer
             foreach ($category['recipes'] as $recipe) {
                 $recipe_title_raw = (string) ($recipe['title'] ?? 'Receita');
                 $recipe_title = self::h($recipe_title_raw);
+                $is_generic = ! empty($recipe['is_generic']) || ! empty($recipe['isGeneric']);
+
+                if ($is_generic) {
+                    $description_source = trim((string) ($recipe['description'] ?? ''));
+                    if ($description_source === '') {
+                        $description_source = self::recipe_description($recipe_title_raw, '');
+                    }
+
+                    $generic_paragraphs = self::paragraphs($description_source);
+                    if (! $generic_paragraphs) {
+                        $generic_paragraphs = [$description_source];
+                    }
+
+                    $generic_body_html = '';
+                    foreach ($generic_paragraphs as $paragraph) {
+                        $generic_body_html .= '<p>' . self::h($paragraph) . '</p>';
+                    }
+
+                    $tip_raw = trim((string) ($recipe['tip'] ?? ''));
+                    $category_label = trim((string) ($recipe['category'] ?? ''));
+                    $image_src_raw = trim((string) ($recipe['image'] ?? ''));
+                    $generic_media_html = '';
+                    if (self::is_valid_image_src($image_src_raw)) {
+                        $generic_media_html = '<div class="generic-media"><img src="' . self::h($image_src_raw) . '" alt="' . $recipe_title . '"></div>';
+                    }
+
+                    $recipe_sections_html .= '<div class="generic-content-page">'
+                        . $generic_media_html
+                        . '<h2><span class="recipe-badge">' . $global_index . '</span> ' . $recipe_title . '</h2>'
+                        . ($category_label !== '' ? '<div class="generic-category">' . self::h($category_label) . '</div>' : '')
+                        . '<div class="generic-body">' . $generic_body_html . '</div>'
+                        . ($tip_raw !== '' ? '<div class="generic-tip"><strong>Nota do Daniel:</strong> ' . self::h($tip_raw) . '</div>' : '')
+                        . '</div>';
+
+                    $global_index++;
+                    continue;
+                }
 
                 $ingredients_html = '';
                 foreach ((array) ($recipe['ingredients'] ?? []) as $item) {
@@ -250,7 +288,7 @@ class PDFW_Renderer
 }
 
 html,body { font-family:'Noto Sans','Calibri',sans-serif; font-size:10.5pt; line-height:1.45; color:var(--text); background:var(--page-bg); }
-.toc,.intro,.quick-options,.recipe-title-page,.recipe-content-page,.tips-page,.back-cover{background:var(--page-bg);}
+.toc,.intro,.quick-options,.recipe-title-page,.recipe-content-page,.generic-content-page,.tips-page,.back-cover{background:var(--page-bg);}
 .cover{page:cover;page-break-before:always;width:148mm;height:210mm;background:linear-gradient(155deg,var(--cover-bg),var(--cover-bg-2));position:relative;display:flex;align-items:center;justify-content:center;flex-direction:column;text-align:center;overflow:hidden;color:#fff;}
 .cover-media{position:absolute;inset:0;z-index:0;overflow:hidden;}
 .cover-media img{width:100%;height:100%;object-fit:cover;display:block;}
@@ -314,6 +352,13 @@ html,body { font-family:'Noto Sans','Calibri',sans-serif; font-size:10.5pt; line
 .nutri-item{flex:1;min-width:18mm;text-align:center;}
 .nutri-value{font-size:10.8pt;color:var(--accent);font-weight:700;display:block;}
 .nutri-label{font-size:7pt;color:#666;text-transform:uppercase;}
+.generic-content-page{page-break-before:always;font-size:10pt;line-height:1.62;}
+.generic-media{width:calc(100% + 24mm);height:84mm;margin:-15mm -12mm 6mm -12mm;overflow:hidden;}
+.generic-media img{width:100%;height:100%;object-fit:cover;display:block;}
+.generic-content-page h2{font-family:'Georgia','Noto Serif',serif;font-size:15pt;line-height:1.25;color:var(--heading);margin-bottom:1.8mm;}
+.generic-category{display:inline-block;margin-bottom:3mm;background:#f3e8d8;border:1px solid #e7d3c3;border-radius:99px;padding:1mm 3mm;font-size:8.6pt;color:#6b4d32;text-transform:uppercase;letter-spacing:.5pt;}
+.generic-body p{margin-bottom:3mm;text-align:justify;color:#373737;}
+.generic-tip{margin-top:3.4mm;background:#fff8f0;border:1px solid #e8d8c7;border-radius:7px;padding:2.6mm 3mm;font-size:9pt;color:#4a3a2f;line-height:1.52;}
 .tip-item{display:flex;gap:3mm;margin-bottom:4mm;}
 .tip-num{width:8mm;height:8mm;min-width:8mm;border-radius:50%;background:var(--heading);color:#fff;font-weight:700;text-align:center;line-height:8mm;}
 .tip-content h3{font-size:9.8pt;color:var(--heading);margin-bottom:.8mm;}
@@ -597,10 +642,12 @@ HTML;
             $tip = '';
             $category = '';
             $description = '';
+            $description_lines = [];
             $tempo = '';
             $porcoes = '';
             $dificuldade = '';
             $image = '';
+            $has_recipe_marker = false;
             $nutrition = [
                 'kcal' => '',
                 'carb' => '',
@@ -620,6 +667,18 @@ HTML;
                 }
                 if (preg_match('/^descri(?:c|ç)(?:a|ã)o\s*:?\s*(.+)$/iu', $line, $match) === 1) {
                     $description = trim((string) ($match[1] ?? ''));
+                    if ($description !== '') {
+                        $description_lines[] = $description;
+                    }
+                    $section = 'description';
+                    continue;
+                }
+                if (preg_match('/^conte(?:u|ú)do\s*:?\s*(.+)$/iu', $line, $match) === 1) {
+                    $content_line = trim((string) ($match[1] ?? ''));
+                    if ($content_line !== '') {
+                        $description_lines[] = $content_line;
+                    }
+                    $section = 'description';
                     continue;
                 }
                 if (preg_match('/^tempo\s*:?\s*(.+)$/iu', $line, $match) === 1) {
@@ -640,14 +699,17 @@ HTML;
                 }
                 if (preg_match('/^ingredientes?(?:\\s*[:\\-].*)?$/iu', $line) === 1) {
                     $section = 'ingredients';
+                    $has_recipe_marker = true;
                     continue;
                 }
                 if (preg_match('/^(modo\\s+de\\s+preparo|modo\\s+de\\s+fazer|preparo)(?:\\s*[:\\-].*)?$/iu', $line) === 1) {
                     $section = 'steps';
+                    $has_recipe_marker = true;
                     continue;
                 }
                 if (preg_match('/^informa(?:c|ç)(?:a|ã)o\\s+nutricional(?:\\s*[:\\-].*)?$/iu', $line) === 1) {
                     $section = 'nutrition';
+                    $has_recipe_marker = true;
                     continue;
                 }
                 if (preg_match('/^dica(?:\\s+do\\s+chef)?\\s*:?\\s*(.*)$/iu', $line, $match) === 1) {
@@ -694,15 +756,39 @@ HTML;
                 }
                 if ($section === 'tip') {
                     $tip = trim($tip . ' ' . $line);
+                    continue;
+                }
+                if ($section === 'description' || $section === '') {
+                    $description_lines[] = trim($line);
                 }
             }
 
-            if (! $ingredients) {
+            if ($description_lines) {
+                $description = trim(implode("\n", array_values(array_filter($description_lines, static function ($line) {
+                    return trim((string) $line) !== '';
+                }))));
+            }
+
+            $nutrition = self::normalize_nutrition($nutrition);
+            $has_nutrition = ! empty($nutrition['kcal'])
+                || ! empty($nutrition['carb'])
+                || ! empty($nutrition['prot'])
+                || ! empty($nutrition['fat'])
+                || ! empty($nutrition['fiber']);
+            $is_generic = ! $has_recipe_marker
+                && ! $ingredients
+                && ! $steps
+                && $tempo === ''
+                && $porcoes === ''
+                && $dificuldade === ''
+                && ! $has_nutrition;
+
+            if (! $is_generic && ! $ingredients) {
                 $ingredients = ['Ingredientes conforme orientação nutricional.'];
             }
-            if (! $steps) {
+            if (! $is_generic && ! $steps) {
                 $steps = ['Organize os ingredientes.', 'Prepare em fogo baixo.', 'Ajuste temperos e sirva.'];
-            } else {
+            } elseif (! $is_generic) {
                 $steps = self::expand_step_lines($steps);
             }
 
@@ -717,7 +803,9 @@ HTML;
                 'ingredients' => $ingredients,
                 'steps' => $steps,
                 'tip' => $tip,
-                'nutrition' => self::normalize_nutrition($nutrition),
+                'nutrition' => $nutrition,
+                'is_generic' => $is_generic,
+                'isGeneric' => $is_generic,
             ];
         }
 

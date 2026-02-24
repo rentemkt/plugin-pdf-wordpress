@@ -15,6 +15,9 @@
   const projectsNonce = document.getElementById('pdfw-projects-nonce')?.value || '';
   const importButton = document.getElementById('pdfw-import-content');
   const importStatus = document.getElementById('pdfw-import-status');
+  const importProgress = document.getElementById('pdfw-import-progress');
+  const importProgressBar = document.getElementById('pdfw-import-progress-bar');
+  const importProgressLabel = document.getElementById('pdfw-import-progress-label');
   const driveInput = form.querySelector('input[name="drive_folder_url"]');
   const importAuditCard = document.getElementById('pdfw-import-audit-card');
   const importAuditSummary = document.getElementById('pdfw-import-audit-summary');
@@ -28,7 +31,7 @@
   const categoryManager = document.getElementById('pdfw-category-manager');
   const addCategoryButton = document.getElementById('pdfw-add-category');
 
-  const projectSelect = document.getElementById('pdfw-project-select');
+  const projectDashboard = document.getElementById('pdfw-projects-dashboard');
   const projectNameInput = document.getElementById('pdfw-project-name');
   const projectClientInput = document.getElementById('pdfw-project-client');
   const projectStatus = document.getElementById('pdfw-project-status');
@@ -36,6 +39,7 @@
   const projectSaveButton = document.getElementById('pdfw-project-save');
   const projectSaveAsButton = document.getElementById('pdfw-project-save-as');
   const projectDeleteButton = document.getElementById('pdfw-project-delete');
+  const toastContainer = document.getElementById('pdfw-toast-container');
   const navButtons = Array.from(document.querySelectorAll('.pdfw-nav-item[data-target-section]'));
   const editorSections = Array.from(document.querySelectorAll('.pdfw-editor-section[data-section-id]'));
   const sidebarProjectName = document.getElementById('pdfw-sidebar-project-name');
@@ -59,6 +63,7 @@
   let currentProjectId = '';
   let projectDirty = false;
   let activeSection = 'projetos';
+  const importButtonDefaultHtml = importButton ? importButton.innerHTML : 'Importar conteúdo';
 
   const sampleRecipes = `Panqueca de Banana
 Ingredientes:
@@ -131,6 +136,22 @@ Finalize com azeite extravirgem após o preparo.`;
     if (level === 'busy') importStatus.classList.add('is-busy');
   };
 
+  const setImportProgress = (percent, label = '') => {
+    if (!importProgress || !importProgressBar || !importProgressLabel) return;
+    const pctRaw = Number(percent);
+    const pct = Number.isFinite(pctRaw) ? Math.max(0, Math.min(100, Math.round(pctRaw))) : 0;
+    importProgress.hidden = false;
+    importProgressBar.style.width = `${pct}%`;
+    importProgressLabel.textContent = label ? `${label} (${pct}%)` : `${pct}%`;
+  };
+
+  const hideImportProgress = () => {
+    if (!importProgress || !importProgressBar || !importProgressLabel) return;
+    importProgress.hidden = true;
+    importProgressBar.style.width = '0%';
+    importProgressLabel.textContent = '0%';
+  };
+
   const normalizeAuditItems = (rawItems) => {
     if (!Array.isArray(rawItems)) return [];
     return rawItems
@@ -138,7 +159,7 @@ Finalize com azeite extravirgem após o preparo.`;
         if (!item || typeof item !== 'object') return null;
         const source = String(item.source || '') === 'drive' ? 'drive' : 'upload';
         const kindRaw = String(item.kind || '').toLowerCase();
-        const kind = ['recipe', 'image', 'skip', 'error'].includes(kindRaw) ? kindRaw : 'skip';
+        const kind = ['recipe', 'generic', 'image', 'skip', 'error'].includes(kindRaw) ? kindRaw : 'skip';
         const name = normalizeLine(item.name || 'arquivo');
         const note = normalizeLine(item.note || '');
         const recipesCountRaw = Number(item.recipes_count);
@@ -169,6 +190,7 @@ Finalize com azeite extravirgem após o preparo.`;
 
     const totals = {
       recipe: 0,
+      generic: 0,
       image: 0,
       skip: 0,
       error: 0,
@@ -177,6 +199,9 @@ Finalize com azeite extravirgem após o preparo.`;
     items.forEach((item) => {
       if (item.kind === 'recipe') {
         totals.recipe += 1;
+        totals.recipesDetected += item.recipesCount;
+      } else if (item.kind === 'generic') {
+        totals.generic += 1;
         totals.recipesDetected += item.recipesCount;
       } else if (item.kind === 'image') {
         totals.image += 1;
@@ -192,13 +217,15 @@ Finalize com azeite extravirgem após o preparo.`;
       ? Math.max(0, Math.trunc(recipesDetectedFromResponse))
       : totals.recipesDetected;
 
-    importAuditSummary.textContent = `Arquivos analisados: ${items.length}. Receitas detectadas: ${recipesDetected}. Imagens: ${totals.image}. Ignorados: ${totals.skip}. Erros: ${totals.error}.`;
+    importAuditSummary.textContent = `Arquivos analisados: ${items.length}. Itens detectados: ${recipesDetected}. Receitas: ${totals.recipe}. Textos: ${totals.generic}. Imagens: ${totals.image}. Ignorados: ${totals.skip}. Erros: ${totals.error}.`;
 
     const rowsHtml = items.map((item) => {
       const sourceLabel = item.source === 'drive' ? 'Google Drive' : 'Upload';
       let kindLabel = 'Ignorado';
       if (item.kind === 'recipe') {
         kindLabel = item.recipesCount > 1 ? `Receita (${item.recipesCount})` : 'Receita';
+      } else if (item.kind === 'generic') {
+        kindLabel = item.recipesCount > 1 ? `Texto (${item.recipesCount})` : 'Texto';
       } else if (item.kind === 'image') {
         kindLabel = 'Imagem';
       } else if (item.kind === 'error') {
@@ -329,6 +356,95 @@ Finalize com azeite extravirgem após o preparo.`;
     .replace(/'/g, '&#39;');
 
   const normalizeLine = (value) => String(value || '').trim();
+
+  const showToast = (message, type = 'info', ttlMs = 4200) => {
+    if (!toastContainer) return;
+    const text = normalizeLine(message);
+    if (!text) return;
+
+    const toast = document.createElement('div');
+    toast.className = `pdfw-toast is-${type}`;
+    toast.innerHTML = `<span>${escapeHtml(text)}</span>`;
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'pdfw-toast-close';
+    closeBtn.setAttribute('aria-label', 'Fechar notificação');
+    closeBtn.innerHTML = '&times;';
+    closeBtn.addEventListener('click', () => {
+      toast.classList.add('is-leaving');
+      window.setTimeout(() => toast.remove(), 220);
+    });
+
+    toast.appendChild(closeBtn);
+    toastContainer.appendChild(toast);
+
+    window.setTimeout(() => {
+      toast.classList.add('is-leaving');
+      window.setTimeout(() => toast.remove(), 220);
+    }, ttlMs);
+  };
+
+  const normalizeMediaKey = (value) => String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+  const mediaKeyTokens = (value) => normalizeMediaKey(value).split('-').filter(Boolean);
+
+  const applyImageEntriesToItems = (items, imageEntries) => {
+    const list = Array.isArray(items) ? items.map((item) => ({ ...item })) : [];
+    const available = (Array.isArray(imageEntries) ? imageEntries : [])
+      .map((entry) => ({
+        src: normalizeLine(entry?.src || ''),
+        key: normalizeMediaKey(entry?.key || entry?.base || entry?.name || ''),
+      }))
+      .filter((entry) => entry.src !== '');
+
+    if (!list.length || !available.length) return list;
+
+    list.forEach((item) => {
+      if (!item || typeof item !== 'object') return;
+      if (normalizeLine(item.image || '') !== '') return;
+
+      const title = normalizeLine(item.title || '');
+      const titleKey = normalizeMediaKey(title);
+      if (!titleKey) return;
+
+      const titleTokens = mediaKeyTokens(titleKey);
+      let bestIndex = -1;
+      let bestScore = 0;
+
+      available.forEach((entry, index) => {
+        const key = entry.key;
+        if (!key) return;
+
+        let score = 0;
+        if (key === titleKey) {
+          score = 100;
+        } else if (key.includes(titleKey) || titleKey.includes(key)) {
+          score = 80;
+        } else {
+          const overlap = titleTokens.filter((token) => mediaKeyTokens(key).includes(token));
+          score = overlap.length * 10;
+        }
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestIndex = index;
+        }
+      });
+
+      if (bestIndex >= 0 && bestScore >= 20) {
+        item.image = available[bestIndex].src;
+        available.splice(bestIndex, 1);
+      }
+    });
+
+    return list;
+  };
 
   const toList = (text, kind) => {
     return String(text || '')
@@ -481,11 +597,11 @@ Finalize com azeite extravirgem após o preparo.`;
     });
 
     if (!next.length) {
-      next.push({ name: 'Receitas', subtitle: '', image: '' });
+      next.push({ name: 'Itens', subtitle: '', image: '' });
     }
 
     categoriesState = next;
-    const firstCategoryName = categoriesState[0]?.name || 'Receitas';
+    const firstCategoryName = categoriesState[0]?.name || 'Itens';
 
     recipesState = recipesState.map((recipe) => {
       const current = normalizeCategoryName(recipe?.category);
@@ -546,13 +662,18 @@ Finalize com azeite extravirgem após o preparo.`;
         .filter((line) => line !== '');
       if (!lines.length) return;
 
-      const title = lines.shift() || 'Receita sem título';
-      let section = '';
+      const title = lines.shift() || 'Item sem título';
+      const blockLower = block.toLowerCase();
+      const looksLikeRecipe = blockLower.includes('ingredientes:')
+        || blockLower.includes('modo de preparo')
+        || blockLower.includes('preparo:');
+
+      let section = looksLikeRecipe ? '' : 'description';
       const ingredients = [];
       const steps = [];
       const tipLines = [];
+      const descriptionLines = [];
       let category = '';
-      let description = '';
       let tempo = '';
       let porcoes = '';
       let dificuldade = '';
@@ -571,7 +692,14 @@ Finalize com azeite extravirgem após o preparo.`;
         }
         const descriptionMatch = line.match(/^descri(?:c|ç)(?:a|ã)o\s*:?\s*(.+)$/i);
         if (descriptionMatch && descriptionMatch[1]) {
-          description = normalizeLine(descriptionMatch[1]);
+          descriptionLines.push(normalizeLine(descriptionMatch[1]));
+          section = 'description';
+          return;
+        }
+        const contentMatch = line.match(/^conte(?:u|ú)do\s*:?\s*(.+)$/i);
+        if (contentMatch && contentMatch[1]) {
+          descriptionLines.push(normalizeLine(contentMatch[1]));
+          section = 'description';
           return;
         }
         const tempoMatch = line.match(/^tempo\s*:?\s*(.+)$/i);
@@ -600,6 +728,10 @@ Finalize com azeite extravirgem após o preparo.`;
         }
         if (low.includes('modo de preparo') || low === 'preparo:' || low === 'preparo') {
           section = 'steps';
+          return;
+        }
+        if (low.startsWith('descrição:') || low.startsWith('descricao:') || low.startsWith('conteúdo:') || low.startsWith('conteudo:')) {
+          section = 'description';
           return;
         }
         if (low.includes('informação nutricional') || low.includes('informacao nutricional')) {
@@ -655,15 +787,28 @@ Finalize com azeite extravirgem após o preparo.`;
           tipLines.push(line);
           return;
         }
+        if (section === 'description' || section === '') {
+          descriptionLines.push(line);
+          return;
+        }
         if (section === 'nutrition') {
           // Ignora linhas nutricionais não mapeadas.
         }
       });
 
+      const hasNutrition = Object.values(nutrition).some((value) => normalizeLine(value) !== '');
+      const hasRecipeData = ingredients.length > 0
+        || steps.length > 0
+        || normalizeLine(tempo) !== ''
+        || normalizeLine(porcoes) !== ''
+        || normalizeLine(dificuldade) !== ''
+        || hasNutrition;
+      const isGeneric = !hasRecipeData;
+
       out.push({
-        title: normalizeLine(title) || 'Receita sem título',
+        title: normalizeLine(title) || 'Item sem título',
         category: normalizeCategoryName(category),
-        description,
+        description: descriptionLines.join('\n').trim(),
         tempo,
         porcoes,
         dificuldade,
@@ -672,6 +817,7 @@ Finalize com azeite extravirgem após o preparo.`;
         steps: steps.filter(Boolean),
         tip: tipLines.join(' ').trim(),
         nutrition,
+        isGeneric,
       });
     });
 
@@ -695,7 +841,7 @@ Finalize com azeite extravirgem após o preparo.`;
 
     const blocks = orderedRecipes
       .map((recipe) => {
-        const title = normalizeLine(recipe?.title) || 'Receita sem título';
+        const title = normalizeLine(recipe?.title) || 'Item sem título';
         const category = normalizeCategoryName(recipe?.category);
         const description = normalizeLine(recipe?.description);
         const tempo = normalizeLine(recipe?.tempo);
@@ -713,62 +859,82 @@ Finalize com azeite extravirgem após o preparo.`;
         const nutritionProt = normalizeLine(nutrition?.prot);
         const nutritionFat = normalizeLine(nutrition?.fat);
         const nutritionFiber = normalizeLine(nutrition?.fiber);
+        const hasNutrition = [nutritionKcal, nutritionCarb, nutritionProt, nutritionFat, nutritionFiber].some((value) => value !== '');
+        const isRecipeMode = !recipe?.isGeneric
+          && (
+            ingredients.length > 0
+            || steps.length > 0
+            || tempo !== ''
+            || porcoes !== ''
+            || dificuldade !== ''
+            || hasNutrition
+          );
 
         const lines = [title];
         if (category) {
           lines.push(`Categoria: ${category}`);
         }
         if (description) {
-          lines.push(`Descrição: ${description}`);
+          if (isRecipeMode) {
+            lines.push(`Descrição: ${description}`);
+          } else {
+            description.split('\n').forEach((line) => {
+              const clean = normalizeLine(line);
+              if (clean) lines.push(clean);
+            });
+          }
         }
-        if (tempo) {
+        if (isRecipeMode && tempo) {
           lines.push(`Tempo: ${tempo}`);
         }
-        if (porcoes) {
+        if (isRecipeMode && porcoes) {
           lines.push(`Porções: ${porcoes}`);
         }
-        if (dificuldade) {
+        if (isRecipeMode && dificuldade) {
           lines.push(`Dificuldade: ${dificuldade}`);
         }
         if (image) {
           lines.push(`Imagem: ${image}`);
         }
-        lines.push('Ingredientes:');
-        if (ingredients.length) {
-          ingredients.forEach((item) => {
-            const clean = normalizeLine(item);
-            if (clean) lines.push(`- ${clean}`);
-          });
-        } else {
-          lines.push('- Ingredientes conforme orientação nutricional.');
-        }
 
-        lines.push('Modo de preparo:');
-        if (steps.length) {
-          let idx = 1;
-          steps.forEach((step) => {
-            const clean = normalizeLine(step);
-            if (clean) {
-              lines.push(`${idx}. ${clean}`);
-              idx += 1;
-            }
-          });
-        } else {
-          lines.push('1. Organize os ingredientes.');
-          lines.push('2. Faça o preparo conforme orientação.');
-        }
+        if (isRecipeMode) {
+          lines.push('Ingredientes:');
+          if (ingredients.length) {
+            ingredients.forEach((item) => {
+              const clean = normalizeLine(item);
+              if (clean) lines.push(`- ${clean}`);
+            });
+          } else {
+            lines.push('- Ingredientes conforme orientação nutricional.');
+          }
 
-        if (tip) {
-          lines.push('Dica:');
-          lines.push(tip);
-        }
-        if (nutritionKcal || nutritionCarb || nutritionProt || nutritionFat || nutritionFiber) {
-          lines.push('Informação Nutricional:');
-          if (nutritionKcal) lines.push(`Calorias: ${nutritionKcal}`);
-          if (nutritionCarb) lines.push(`Carboidratos: ${nutritionCarb}`);
-          if (nutritionProt) lines.push(`Proteínas: ${nutritionProt}`);
-          if (nutritionFat) lines.push(`Gorduras: ${nutritionFat}`);
-          if (nutritionFiber) lines.push(`Fibras: ${nutritionFiber}`);
+          lines.push('Modo de preparo:');
+          if (steps.length) {
+            let idx = 1;
+            steps.forEach((step) => {
+              const clean = normalizeLine(step);
+              if (clean) {
+                lines.push(`${idx}. ${clean}`);
+                idx += 1;
+              }
+            });
+          } else {
+            lines.push('1. Organize os ingredientes.');
+            lines.push('2. Faça o preparo conforme orientação.');
+          }
+
+          if (tip) {
+            lines.push('Dica:');
+            lines.push(tip);
+          }
+          if (hasNutrition) {
+            lines.push('Informação Nutricional:');
+            if (nutritionKcal) lines.push(`Calorias: ${nutritionKcal}`);
+            if (nutritionCarb) lines.push(`Carboidratos: ${nutritionCarb}`);
+            if (nutritionProt) lines.push(`Proteínas: ${nutritionProt}`);
+            if (nutritionFat) lines.push(`Gorduras: ${nutritionFat}`);
+            if (nutritionFiber) lines.push(`Fibras: ${nutritionFiber}`);
+          }
         }
 
         return lines.join('\n');
@@ -807,7 +973,7 @@ Finalize com azeite extravirgem após o preparo.`;
               <input type="text" class="pdfw-category-subtitle" data-category-field="subtitle" value="${escapeHtml(subtitle)}" placeholder="Subtítulo da subcapa (opcional)">
               <input type="url" class="pdfw-category-image" data-category-field="image" value="${escapeHtml(image)}" placeholder="Imagem da subcapa (URL opcional)">
             </div>
-            <span class="pdfw-category-count">${count} ${count === 1 ? 'receita' : 'receitas'}</span>
+            <span class="pdfw-category-count">${count} ${count === 1 ? 'item' : 'itens'}</span>
             <button type="button" class="button button-small" data-category-action="remove">Excluir</button>
           </div>
         `;
@@ -821,15 +987,15 @@ Finalize com azeite extravirgem após o preparo.`;
     if (!recipeBuilder) return;
 
     if (!recipesState.length) {
-      recipeBuilder.innerHTML = '<div class="pdfw-recipe-empty">Nenhuma receita no editor. Clique em "Adicionar receita".</div>';
+      recipeBuilder.innerHTML = '<div class="pdfw-recipe-empty">Nenhum item no editor. Clique em "Adicionar item".</div>';
       updateSidebarMeta();
       return;
     }
 
     recipeBuilder.innerHTML = recipesState
       .map((recipe, index) => {
-        const title = normalizeLine(recipe.title) || 'Receita sem título';
-        const category = normalizeCategoryName(recipe.category) || categoriesState[0]?.name || 'Receitas';
+        const title = normalizeLine(recipe.title) || 'Item sem título';
+        const category = normalizeCategoryName(recipe.category) || categoriesState[0]?.name || 'Itens';
         const description = normalizeLine(recipe.description);
         const tempo = normalizeLine(recipe.tempo);
         const porcoes = normalizeLine(recipe.porcoes);
@@ -846,30 +1012,20 @@ Finalize com azeite extravirgem após o preparo.`;
         const prot = normalizeLine(nutrition.prot);
         const fat = normalizeLine(nutrition.fat);
         const fiber = normalizeLine(nutrition.fiber);
+        const hasNutrition = [kcal, carb, prot, fat, fiber].some((value) => value !== '');
+        const isRecipeMode = !recipe?.isGeneric
+          && (
+            (recipe.ingredients || []).length > 0
+            || (recipe.steps || []).length > 0
+            || tempo !== ''
+            || porcoes !== ''
+            || dificuldade !== ''
+            || hasNutrition
+          );
 
-        return `
-          <article class="pdfw-recipe-card" data-index="${index}" draggable="true">
-            <div class="pdfw-recipe-card-header">
-              <div class="pdfw-recipe-card-title">
-                <span class="pdfw-category-handle">☰</span>
-                <span class="pdfw-recipe-index">${index + 1}</span>
-                <span class="pdfw-recipe-name">${escapeHtml(title)}</span>
-              </div>
-              <div class="pdfw-recipe-actions">
-                <button type="button" class="button button-small" data-action="up" ${index === 0 ? 'disabled' : ''}>↑</button>
-                <button type="button" class="button button-small" data-action="down" ${index === recipesState.length - 1 ? 'disabled' : ''}>↓</button>
-                <button type="button" class="button button-small" data-action="remove">Excluir</button>
-              </div>
-            </div>
-            <div class="pdfw-recipe-grid">
-              <div class="pdfw-field pdfw-field--full">
-                <label>Título</label>
-                <input type="text" data-field="title" value="${escapeHtml(title)}">
-              </div>
-              <div class="pdfw-field pdfw-field--full">
-                <label>Categoria</label>
-                <select data-field="category">${categoryOptionsHtml(category)}</select>
-              </div>
+        let contentHtml = '';
+        if (isRecipeMode) {
+          contentHtml = `
               <div class="pdfw-field pdfw-field--full">
                 <label>Descrição</label>
                 <textarea rows="3" data-field="description">${escapeHtml(description)}</textarea>
@@ -885,10 +1041,6 @@ Finalize com azeite extravirgem após o preparo.`;
               <div class="pdfw-field">
                 <label>Dificuldade</label>
                 <input type="text" data-field="dificuldade" value="${escapeHtml(dificuldade)}" placeholder="Ex.: Fácil">
-              </div>
-              <div class="pdfw-field pdfw-field--full">
-                <label>Imagem da Receita (URL)</label>
-                <input type="url" data-field="image" value="${escapeHtml(image)}" placeholder="https://.../receita.jpg">
               </div>
               <div class="pdfw-field">
                 <label>Ingredientes (1 por linha)</label>
@@ -912,6 +1064,44 @@ Finalize com azeite extravirgem após o preparo.`;
                   <input type="text" data-field="nutrition_fiber" value="${escapeHtml(fiber)}" placeholder="Fibras">
                 </div>
               </div>
+          `;
+        } else {
+          contentHtml = `
+              <div class="pdfw-field pdfw-field--full">
+                <label>Conteúdo (capítulo/aula)</label>
+                <textarea rows="14" data-field="description" placeholder="Cole ou edite o texto completo aqui...">${escapeHtml(description)}</textarea>
+              </div>
+          `;
+        }
+
+        return `
+          <article class="pdfw-recipe-card ${isRecipeMode ? 'is-recipe' : 'is-generic'}" data-index="${index}" draggable="true">
+            <div class="pdfw-recipe-card-header">
+              <div class="pdfw-recipe-card-title">
+                <span class="pdfw-category-handle">☰</span>
+                <span class="pdfw-recipe-index">${index + 1}</span>
+                <span class="pdfw-recipe-name">${escapeHtml(title)} <small>(${isRecipeMode ? 'Receita' : 'Texto'})</small></span>
+              </div>
+              <div class="pdfw-recipe-actions">
+                <button type="button" class="button button-small" data-action="up" ${index === 0 ? 'disabled' : ''}>↑</button>
+                <button type="button" class="button button-small" data-action="down" ${index === recipesState.length - 1 ? 'disabled' : ''}>↓</button>
+                <button type="button" class="button button-small" data-action="remove">Excluir</button>
+              </div>
+            </div>
+            <div class="pdfw-recipe-grid">
+              <div class="pdfw-field pdfw-field--full">
+                <label>Título</label>
+                <input type="text" data-field="title" value="${escapeHtml(title)}">
+              </div>
+              <div class="pdfw-field pdfw-field--full">
+                <label>Categoria</label>
+                <select data-field="category">${categoryOptionsHtml(category)}</select>
+              </div>
+              <div class="pdfw-field pdfw-field--full">
+                <label>Imagem de destaque (URL)</label>
+                <input type="url" data-field="image" value="${escapeHtml(image)}" placeholder="https://.../receita.jpg">
+              </div>
+              ${contentHtml}
             </div>
           </article>
         `;
@@ -929,19 +1119,20 @@ Finalize com azeite extravirgem após o preparo.`;
   };
 
   const addRecipe = () => {
-    const defaultCategory = categoriesState[0]?.name || 'Receitas';
+    const defaultCategory = categoriesState[0]?.name || 'Itens';
     recipesState.push({
-      title: 'Nova receita',
+      title: 'Novo item',
       category: defaultCategory,
       description: '',
       tempo: '',
       porcoes: '',
       dificuldade: '',
       image: '',
-      ingredients: ['Ingrediente 1', 'Ingrediente 2'],
-      steps: ['Passo 1', 'Passo 2'],
+      ingredients: [],
+      steps: [],
       tip: '',
       nutrition: { kcal: '', carb: '', prot: '', fat: '', fiber: '' },
+      isGeneric: true,
     });
     rebuildCategoriesFromRecipes();
     syncRawFromRecipes();
@@ -985,7 +1176,7 @@ Finalize com azeite extravirgem após o preparo.`;
       recipesState[index].title = target.value;
     } else if (field === 'category') {
       const nextCategory = normalizeCategoryName(target.value);
-      recipesState[index].category = nextCategory || (categoriesState[0]?.name || 'Receitas');
+      recipesState[index].category = nextCategory || (categoriesState[0]?.name || 'Itens');
     } else if (field === 'description') {
       recipesState[index].description = target.value;
     } else if (field === 'tempo') {
@@ -1011,6 +1202,18 @@ Finalize com azeite extravirgem após o preparo.`;
         recipesState[index].nutrition[key] = target.value;
       }
     }
+
+    const current = recipesState[index] || {};
+    const hasNutrition = current?.nutrition && typeof current.nutrition === 'object'
+      ? Object.values(current.nutrition).some((value) => normalizeLine(value) !== '')
+      : false;
+    const hasRecipeData = (Array.isArray(current.ingredients) && current.ingredients.length > 0)
+      || (Array.isArray(current.steps) && current.steps.length > 0)
+      || normalizeLine(current.tempo) !== ''
+      || normalizeLine(current.porcoes) !== ''
+      || normalizeLine(current.dificuldade) !== ''
+      || hasNutrition;
+    recipesState[index].isGeneric = !hasRecipeData;
 
     rebuildCategoriesFromRecipes();
     syncRawFromRecipes();
@@ -1125,13 +1328,13 @@ Finalize com azeite extravirgem após o preparo.`;
     if (action !== 'remove') return;
 
     if (categoriesState.length <= 1) {
-      window.alert('É necessário manter ao menos uma categoria.');
+      showToast('É necessário manter ao menos uma categoria.', 'error');
       return;
     }
 
     const removed = categoriesState[index];
     categoriesState.splice(index, 1);
-    const fallback = categoriesState[0]?.name || 'Receitas';
+    const fallback = categoriesState[0]?.name || 'Itens';
 
     recipesState = recipesState.map((recipe) => {
       if (categoryKey(recipe?.category) !== categoryKey(removed?.name)) return recipe;
@@ -1344,10 +1547,57 @@ Finalize com azeite extravirgem após o preparo.`;
       setStatus('Erro na pré-visualização. Ajuste os dados e tente novamente.');
       const message = err instanceof Error ? err.message : 'Erro inesperado';
       setLog(message);
+      showToast(message, 'error');
     } finally {
       previewBusy = false;
       setPreviewButtonsDisabled(false);
     }
+  };
+
+  const processImportResult = (data) => {
+    const preparedRaw = String(data?.prepared_recipes_raw || '');
+    const coverImage = String(data?.cover_image || '');
+    const recipesCountPayload = Number(data?.recipes_count || 0);
+    const notice = String(data?.notice || '');
+    const auditItems = Array.isArray(data?.audit_items) ? data.audit_items : [];
+    const importedByAudit = normalizeAuditItems(auditItems)
+      .reduce((sum, item) => {
+        if (item.kind === 'recipe' || item.kind === 'generic') {
+          return sum + item.recipesCount;
+        }
+        return sum;
+      }, 0);
+    const recipesCount = importedByAudit > 0
+      ? importedByAudit
+      : (Number.isFinite(recipesCountPayload) ? Math.max(0, Math.trunc(recipesCountPayload)) : 0);
+
+    if (preparedRaw && recipesRawInput) {
+      recipesRawInput.value = preparedRaw;
+      syncRecipesFromRaw();
+    }
+
+    if (coverImage) {
+      const coverField = form.querySelector('[name="cover_image"]');
+      if (coverField && !normalizeLine(coverField.value || '')) {
+        coverField.value = coverImage;
+      }
+    }
+
+    importedRecipesRaw = preparedRaw;
+    if (applyImportedButton) {
+      applyImportedButton.style.display = preparedRaw ? 'inline-flex' : 'none';
+    }
+
+    renderImportAudit(auditItems, recipesCount, true);
+    if (notice) {
+      setLog(notice);
+    }
+
+    return {
+      recipesCount,
+      auditItems,
+      notice,
+    };
   };
 
   const runImport = async () => {
@@ -1355,69 +1605,216 @@ Finalize com azeite extravirgem após o preparo.`;
 
     const driveUrl = normalizeLine(driveInput?.value || '');
     const filesInput = form.querySelector('input[name="source_files[]"]');
-    const filesCount = filesInput && filesInput.files ? filesInput.files.length : 0;
+    const hasUpload = Boolean(filesInput && filesInput.files && filesInput.files.length > 0);
 
-    if (!driveUrl && filesCount === 0) {
+    if (!driveUrl && !hasUpload) {
       activateSection('importacao');
       setImportStatus('Informe um link do Drive ou selecione arquivos para importar.', 'error');
+      hideImportProgress();
+      showToast('Informe um link do Drive ou selecione arquivos para importar.', 'error');
       return;
     }
 
     syncRawFromRecipes();
     importBusy = true;
     if (importButton) importButton.disabled = true;
-    setImportStatus('Importando conteúdo, aguarde...', 'busy');
+    if (importButton) importButton.innerHTML = '<span class="pdfw-spinner"></span>Importando...';
     setLog('');
+    setImportStatus('Importação iniciada...', 'busy');
+    setImportProgress(2, 'Iniciando');
+
+    let importedCount = 0;
+    const allAuditItems = [];
+    const noticeLines = [];
+    const driveImageEntries = [];
 
     try {
-      const fd = new FormData(form);
-      fd.set('action', 'pdfw_import');
-      fd.set('nonce', importNonce);
-      fd.delete('pdfw_output');
+      if (hasUpload) {
+        setImportStatus('Processando upload local...', 'busy');
+        setImportProgress(12, 'Processando upload');
 
-      const response = await fetch(getAjaxUrl(), {
-        method: 'POST',
-        body: fd,
-        credentials: 'same-origin',
-      });
+        const fd = new FormData(form);
+        fd.set('action', 'pdfw_import');
+        fd.set('nonce', importNonce);
+        fd.delete('pdfw_output');
+        fd.delete('drive_folder_url');
 
-      let payload = null;
-      try {
-        payload = await response.json();
-      } catch {
-        throw new Error('Resposta inválida ao importar conteúdo.');
+        const response = await fetch(getAjaxUrl(), {
+          method: 'POST',
+          body: fd,
+          credentials: 'same-origin',
+        });
+
+        let payload = null;
+        try {
+          payload = await response.json();
+        } catch {
+          throw new Error('Resposta inválida ao importar upload local.');
+        }
+
+        if (!response.ok || !payload || payload.success !== true) {
+          throw new Error(extractError(payload, 'Falha ao importar upload local.'));
+        }
+
+        const uploadResult = processImportResult(payload.data || {});
+        importedCount += uploadResult.recipesCount;
+        allAuditItems.push(...uploadResult.auditItems);
+        if (uploadResult.notice) {
+          noticeLines.push(uploadResult.notice);
+        }
+        setImportProgress(driveUrl ? 28 : 55, 'Upload concluído');
       }
 
-      if (!response.ok || !payload || payload.success !== true) {
-        throw new Error(extractError(payload, 'Falha ao importar conteúdo.'));
-      }
+      if (driveUrl) {
+        setImportStatus('Escaneando pasta do Drive...', 'busy');
+        setImportProgress(hasUpload ? 32 : 10, 'Escaneando Drive');
 
-      const preparedRaw = String(payload?.data?.prepared_recipes_raw || '');
-      const coverImage = String(payload?.data?.cover_image || '');
-      const recipesCount = Number(payload?.data?.recipes_count || 0);
-      const notice = String(payload?.data?.notice || '');
-      const auditItems = Array.isArray(payload?.data?.audit_items) ? payload.data.audit_items : [];
+        const fdScan = new FormData();
+        fdScan.set('action', 'pdfw_drive_scan');
+        fdScan.set('nonce', importNonce);
+        fdScan.set('url', driveUrl);
 
-      if (preparedRaw && recipesRawInput) {
-        recipesRawInput.value = preparedRaw;
-        syncRecipesFromRaw();
-      }
+        const scanResponse = await fetch(getAjaxUrl(), {
+          method: 'POST',
+          body: fdScan,
+          credentials: 'same-origin',
+        });
 
-      if (coverImage) {
-        const coverField = form.querySelector('[name="cover_image"]');
-        if (coverField && !normalizeLine(coverField.value || '')) {
-          coverField.value = coverImage;
+        let scanPayload = null;
+        try {
+          scanPayload = await scanResponse.json();
+        } catch {
+          throw new Error('Resposta inválida ao escanear Drive.');
+        }
+
+        if (!scanResponse.ok || !scanPayload || scanPayload.success !== true) {
+          throw new Error(extractError(scanPayload, 'Falha ao escanear pasta do Drive.'));
+        }
+
+        const items = Array.isArray(scanPayload?.data?.items) ? scanPayload.data.items : [];
+        if (!items.length) {
+          setImportStatus('Nenhum arquivo elegível encontrado na pasta do Drive.', 'error');
+          setImportProgress(100, 'Nenhum item elegível');
+        } else {
+          const total = items.length;
+          const driveRecipes = [];
+          const driveAudit = [];
+          let processed = 0;
+
+          renderImportAudit([], 0, true);
+
+          for (const item of items) {
+            const pct = Math.round((processed / total) * 100);
+            const itemName = normalizeLine(item?.name || 'arquivo');
+            setImportStatus(`Processando Drive: ${processed + 1}/${total} (${pct}%) - ${itemName}`, 'busy');
+            if (importButton) {
+              importButton.innerHTML = `<span class="pdfw-spinner"></span>Processando ${processed + 1}/${total}...`;
+            }
+            const progressBase = hasUpload ? 32 : 10;
+            const progressPct = progressBase + Math.round(((processed + 1) / total) * (100 - progressBase));
+            setImportProgress(progressPct, `Processando ${processed + 1}/${total}`);
+
+            try {
+              const fdItem = new FormData();
+              fdItem.set('action', 'pdfw_drive_process');
+              fdItem.set('nonce', importNonce);
+              fdItem.set('item', JSON.stringify(item || {}));
+
+              const itemResponse = await fetch(getAjaxUrl(), {
+                method: 'POST',
+                body: fdItem,
+                credentials: 'same-origin',
+              });
+
+              let itemPayload = null;
+              try {
+                itemPayload = await itemResponse.json();
+              } catch {
+                throw new Error('Resposta inválida ao processar item do Drive.');
+              }
+
+              if (!itemResponse.ok || !itemPayload || itemPayload.success !== true) {
+                throw new Error(extractError(itemPayload, 'Falha ao processar item do Drive.'));
+              }
+
+              const result = itemPayload.data || {};
+              if (result.audit && typeof result.audit === 'object') {
+                driveAudit.push(result.audit);
+              }
+
+              const recipes = Array.isArray(result.recipes) ? result.recipes : [];
+              if (recipes.length) {
+                driveRecipes.push(...recipes);
+              }
+
+              const images = Array.isArray(result.images) ? result.images : [];
+              if (images.length) {
+                images.forEach((entry) => {
+                  if (entry && typeof entry === 'object') {
+                    driveImageEntries.push(entry);
+                  }
+                });
+                const firstImage = images.find((entry) => normalizeLine(entry?.src || ''));
+                if (firstImage) {
+                  const coverField = form.querySelector('[name="cover_image"]');
+                  if (coverField && !normalizeLine(coverField.value || '') && normalizeLine(firstImage.src || '')) {
+                    coverField.value = normalizeLine(firstImage.src || '');
+                  }
+                }
+              }
+            } catch (itemError) {
+              const message = itemError instanceof Error ? itemError.message : 'Erro ao processar item do Drive.';
+              driveAudit.push({
+                source: 'drive',
+                name: itemName,
+                kind: 'error',
+                recipes_count: 0,
+                note: message,
+              });
+            }
+
+            processed += 1;
+            if (processed % 5 === 0 || processed === total) {
+              renderImportAudit(driveAudit, driveRecipes.length, true);
+            }
+          }
+
+          const coverField = form.querySelector('[name="cover_image"]');
+          if (coverField && !normalizeLine(coverField.value || '') && driveImageEntries.length > 0) {
+            const hinted = driveImageEntries.find((entry) => Boolean(entry?.is_cover_hint) && normalizeLine(entry?.src || '') !== '');
+            const first = hinted || driveImageEntries.find((entry) => normalizeLine(entry?.src || '') !== '');
+            if (first && normalizeLine(first.src || '') !== '') {
+              coverField.value = normalizeLine(first.src || '');
+            }
+          }
+
+          const driveRecipesWithImages = applyImageEntriesToItems(driveRecipes, driveImageEntries);
+          const mode = form.querySelector('select[name="import_mode"]')?.value || 'append';
+          const driveRaw = recipesToRaw(driveRecipesWithImages);
+          if (driveRaw && recipesRawInput) {
+            if (mode === 'replace') {
+              recipesRawInput.value = driveRaw;
+            } else {
+              const currentRaw = recipesRawInput.value.trim();
+              recipesRawInput.value = currentRaw ? `${currentRaw}\n\n---\n\n${driveRaw}` : driveRaw;
+            }
+            syncRecipesFromRaw();
+          }
+
+          importedCount += driveRecipesWithImages.length;
+          allAuditItems.push(...driveAudit);
+          renderImportAudit(allAuditItems, importedCount, true);
         }
       }
 
-      importedRecipesRaw = preparedRaw;
+      importedRecipesRaw = recipesRawInput ? recipesRawInput.value : importedRecipesRaw;
       if (applyImportedButton) {
-        applyImportedButton.style.display = preparedRaw ? 'inline-flex' : 'none';
+        applyImportedButton.style.display = importedRecipesRaw ? 'inline-flex' : 'none';
       }
 
       markDirty();
 
-      let statusMessage = `Importação concluída: ${recipesCount} ${recipesCount === 1 ? 'receita' : 'receitas'} preparadas.`;
+      let statusMessage = `Importação concluída: ${importedCount} ${importedCount === 1 ? 'item' : 'itens'} detectados.`;
       const shouldAutoSave = Boolean(currentProjectId || normalizeLine(projectNameInput?.value || ''));
 
       if (shouldAutoSave) {
@@ -1434,18 +1831,26 @@ Finalize com azeite extravirgem após o preparo.`;
         setProjectStatus('Importação concluída. Salve o projeto para persistir no banco.', 'warn');
       }
 
-      setImportStatus(statusMessage, 'ok');
-      renderImportAudit(auditItems, recipesCount, true);
-      if (notice) {
-        setLog(notice);
+      setImportStatus(statusMessage, importedCount > 0 ? 'ok' : 'error');
+      setImportProgress(100, importedCount > 0 ? 'Concluído' : 'Concluído sem itens');
+      renderImportAudit(allAuditItems, importedCount, true);
+      showToast(statusMessage, importedCount > 0 ? 'success' : 'warn');
+      if (noticeLines.length) {
+        setLog(noticeLines.join('\n\n'));
       }
       activateSection('receitas');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Erro ao importar conteúdo.';
       setImportStatus(message, 'error');
+      setImportProgress(100, 'Falha na importação');
+      showToast(message, 'error');
     } finally {
       importBusy = false;
-      if (importButton) importButton.disabled = false;
+      if (importButton) {
+        importButton.disabled = false;
+        importButton.innerHTML = importButtonDefaultHtml;
+      }
+      window.setTimeout(hideImportProgress, 1400);
     }
   };
 
@@ -1523,29 +1928,64 @@ Finalize com azeite extravirgem após o preparo.`;
     return json.data || {};
   };
 
-  const renderProjectSelect = (projects) => {
-    if (!projectSelect) return;
+  const formatProjectDate = (value) => {
+    const date = new Date(value || '');
+    if (Number.isNaN(date.getTime())) return 'Sem data';
+    return date.toLocaleDateString('pt-BR');
+  };
+
+  const renderProjectDashboard = (projects) => {
+    if (!projectDashboard) return;
 
     const list = Array.isArray(projects) ? projects : [];
     projectsCache = list;
 
-    const options = ['<option value="">Selecione um projeto...</option>'];
-    list.forEach((project) => {
-      const id = project?.id || '';
-      const name = project?.name || 'Projeto sem nome';
-      const client = project?.client ? ` (${project.client})` : '';
-      options.push(`<option value="${escapeHtml(id)}">${escapeHtml(name + client)}</option>`);
-    });
-    projectSelect.innerHTML = options.join('');
-
-    if (currentProjectId) {
-      projectSelect.value = currentProjectId;
+    if (!list.length) {
+      projectDashboard.innerHTML = '<div class="pdfw-projects-empty">Nenhum projeto salvo ainda.</div>';
+      return;
     }
+
+    const cardsHtml = list.map((project) => {
+      const projectId = normalizeLine(project?.id || '');
+      if (!projectId) return '';
+      const isActive = projectId === currentProjectId;
+      const title = normalizeLine(project?.name || 'Projeto sem nome');
+      const client = normalizeLine(project?.client || 'Sem cliente');
+      const updatedAt = formatProjectDate(project?.updated_at);
+      return `
+        <article class="pdfw-project-card ${isActive ? 'is-active' : ''}" data-project-id="${escapeHtml(projectId)}">
+          <button type="button" class="pdfw-project-delete" data-project-action="delete" title="Excluir projeto" aria-label="Excluir projeto">&times;</button>
+          <div class="pdfw-project-title">${escapeHtml(title)}</div>
+          <div class="pdfw-project-client">${escapeHtml(client)}</div>
+          <div class="pdfw-project-date">Atualizado em ${escapeHtml(updatedAt)}</div>
+        </article>
+      `;
+    }).filter(Boolean).join('');
+
+    projectDashboard.innerHTML = cardsHtml || '<div class="pdfw-projects-empty">Nenhum projeto válido encontrado.</div>';
   };
 
   const refreshProjects = async () => {
     const data = await projectAjax('list');
-    renderProjectSelect(data.projects || []);
+    renderProjectDashboard(data.projects || []);
+  };
+
+  const requestProjectLoad = async (projectId) => {
+    const targetId = normalizeLine(projectId);
+    if (!targetId) return;
+
+    if (projectDirty && targetId !== currentProjectId) {
+      const proceed = window.confirm('Há alterações não salvas no formulário atual. Deseja carregar outro projeto mesmo assim?');
+      if (!proceed) return;
+    }
+
+    try {
+      await loadProject(targetId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Erro ao carregar projeto.';
+      setProjectStatus(message, 'error');
+      showToast(message, 'error');
+    }
   };
 
   const loadProject = async (projectId) => {
@@ -1565,12 +2005,16 @@ Finalize com azeite extravirgem após o preparo.`;
     renderImportAudit([], null, false);
     projectDirty = false;
     setProjectStatus('Projeto carregado.', 'ok');
+    showToast(`Projeto "${project.name || 'sem nome'}" carregado.`, 'success');
+    renderProjectDashboard(projectsCache);
     updateSidebarMeta();
   };
 
   const saveProject = async (asNew) => {
     const name = (projectNameInput?.value || '').trim() || (form.querySelector('[name="title"]')?.value || '').trim() || 'Projeto sem nome';
     const client = (projectClientInput?.value || '').trim();
+    setProjectStatus('Salvando projeto...', 'warn');
+    showToast('Salvando projeto...', 'info', 1500);
 
     const payload = collectFormPayload();
     const projectIdToSend = asNew ? 'new' : (currentProjectId || 'new');
@@ -1586,39 +2030,43 @@ Finalize com azeite extravirgem após o preparo.`;
     if (projectNameInput && data.project?.name) projectNameInput.value = data.project.name;
     if (projectClientInput && typeof data.project?.client === 'string') projectClientInput.value = data.project.client;
 
-    renderProjectSelect(data.projects || projectsCache);
-    if (projectSelect && currentProjectId) {
-      projectSelect.value = currentProjectId;
-    }
+    renderProjectDashboard(data.projects || projectsCache);
 
     projectDirty = false;
     setProjectStatus('Projeto salvo com sucesso.', 'ok');
+    showToast('Projeto salvo com sucesso.', 'success');
     updateSidebarMeta();
   };
 
-  const deleteProject = async () => {
-    if (!currentProjectId) {
+  const deleteProjectById = async (projectId) => {
+    const targetId = normalizeLine(projectId);
+    if (!targetId) {
       throw new Error('Nenhum projeto selecionado para excluir.');
     }
 
     const ok = window.confirm('Excluir este projeto salvo? Essa ação não pode ser desfeita.');
     if (!ok) return;
 
-    await projectAjax('delete', { project_id: currentProjectId });
+    await projectAjax('delete', { project_id: targetId });
 
-    currentProjectId = '';
-    if (projectSelect) projectSelect.value = '';
-    if (projectNameInput) projectNameInput.value = '';
-    if (projectClientInput) projectClientInput.value = '';
+    if (targetId === currentProjectId) {
+      currentProjectId = '';
+      if (projectNameInput) projectNameInput.value = '';
+      if (projectClientInput) projectClientInput.value = '';
+    }
 
     await refreshProjects();
     setProjectStatus('Projeto excluído.', 'ok');
+    showToast('Projeto excluído.', 'success');
     updateSidebarMeta();
+  };
+
+  const deleteProject = async () => {
+    await deleteProjectById(currentProjectId);
   };
 
   const createNewProject = () => {
     currentProjectId = '';
-    if (projectSelect) projectSelect.value = '';
     if (projectNameInput) projectNameInput.value = '';
     if (projectClientInput) projectClientInput.value = '';
 
@@ -1632,13 +2080,15 @@ Finalize com azeite extravirgem após o preparo.`;
       downloadPdfButton.style.display = 'none';
     }
     renderImportAudit([], null, false);
+    renderProjectDashboard(projectsCache);
+    showToast('Novo projeto iniciado.', 'info');
     updateSidebarMeta();
   };
 
   if (sampleButton) {
     sampleButton.addEventListener('click', () => {
       if (!recipesRawInput) return;
-      const ok = window.confirm('Substituir receitas atuais pelo exemplo?');
+      const ok = window.confirm('Substituir itens atuais pelo exemplo?');
       if (!ok) return;
       recipesRawInput.value = sampleRecipes;
       syncRecipesFromRaw();
@@ -1660,7 +2110,8 @@ Finalize com azeite extravirgem após o preparo.`;
       recipesRawInput.value = importedRecipesRaw;
       syncRecipesFromRaw();
       markDirty();
-      setProjectStatus('Receitas importadas aplicadas ao editor. Revise e salve.', 'warn');
+      setProjectStatus('Itens importados aplicados ao editor. Revise e salve.', 'warn');
+      showToast('Itens importados aplicados ao editor.', 'info');
     });
   }
 
@@ -1736,29 +2187,29 @@ Finalize com azeite extravirgem após o preparo.`;
     });
   }
 
-  if (projectSelect) {
-    projectSelect.addEventListener('change', async () => {
-      const targetId = projectSelect.value;
-      if (!targetId) {
-        currentProjectId = '';
-        setProjectStatus('Nenhum projeto selecionado.', 'warn');
+  if (projectDashboard) {
+    projectDashboard.addEventListener('click', async (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+
+      const deleteButton = target.closest('button[data-project-action="delete"]');
+      if (deleteButton) {
+        const card = deleteButton.closest('.pdfw-project-card');
+        const projectId = card?.getAttribute('data-project-id') || '';
+        try {
+          await deleteProjectById(projectId);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Erro ao excluir projeto.';
+          setProjectStatus(message, 'error');
+          showToast(message, 'error');
+        }
         return;
       }
 
-      if (projectDirty) {
-        const proceed = window.confirm('Há alterações não salvas no formulário atual. Deseja carregar outro projeto mesmo assim?');
-        if (!proceed) {
-          projectSelect.value = currentProjectId;
-          return;
-        }
-      }
-
-      try {
-        await loadProject(targetId);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Erro ao carregar projeto.';
-        setProjectStatus(message, 'error');
-      }
+      const card = target.closest('.pdfw-project-card');
+      if (!card) return;
+      const projectId = card.getAttribute('data-project-id') || '';
+      await requestProjectLoad(projectId);
     });
   }
 
@@ -1770,6 +2221,7 @@ Finalize com azeite extravirgem após o preparo.`;
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Erro ao salvar projeto.';
         setProjectStatus(message, 'error');
+        showToast(message, 'error');
       }
     });
   }
@@ -1782,6 +2234,7 @@ Finalize com azeite extravirgem após o preparo.`;
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Erro ao salvar projeto como novo.';
         setProjectStatus(message, 'error');
+        showToast(message, 'error');
       }
     });
   }
@@ -1794,6 +2247,7 @@ Finalize com azeite extravirgem após o preparo.`;
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Erro ao excluir projeto.';
         setProjectStatus(message, 'error');
+        showToast(message, 'error');
       }
     });
   }
@@ -1813,6 +2267,7 @@ Finalize com azeite extravirgem após o preparo.`;
     syncRecipesFromRaw();
     initialPayload = collectFormPayload();
     setImportStatus('Cole o link do Drive ou selecione arquivos e clique em Importar conteúdo.', 'idle');
+    hideImportProgress();
     renderImportAudit([], null, false);
     const storedSection = getStoredSection();
     if (storedSection) {
@@ -1825,6 +2280,7 @@ Finalize com azeite extravirgem após o preparo.`;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Erro ao carregar projetos.';
       setProjectStatus(message, 'error');
+      showToast(message, 'error');
     }
 
     updateSidebarMeta();

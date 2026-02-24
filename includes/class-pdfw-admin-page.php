@@ -104,6 +104,84 @@ class PDFW_Admin_Page
         ]);
     }
 
+    public function handle_drive_scan(): void
+    {
+        if (! current_user_can('manage_options')) {
+            wp_send_json_error(['message' => 'Sem permissão.'], 403);
+        }
+
+        check_ajax_referer('pdfw_import', 'nonce');
+
+        $url = isset($_POST['url']) ? esc_url_raw(wp_unslash((string) $_POST['url'])) : '';
+        $result = PDFW_Ingestor::scan_drive_structure($url);
+        if (! (bool) ($result['ok'] ?? false)) {
+            $logs = is_array($result['logs'] ?? null) ? $result['logs'] : [];
+            $message = trim(implode("\n", array_filter(array_map('strval', $logs))));
+            if ($message === '') {
+                $message = 'Não foi possível listar os itens do Drive.';
+            }
+            wp_send_json_error(['message' => $message], 400);
+        }
+
+        wp_send_json_success([
+            'items' => is_array($result['items'] ?? null) ? array_values($result['items']) : [],
+            'total' => count(is_array($result['items'] ?? null) ? $result['items'] : []),
+            'logs' => is_array($result['logs'] ?? null) ? $result['logs'] : [],
+        ]);
+    }
+
+    public function handle_drive_process(): void
+    {
+        if (! current_user_can('manage_options')) {
+            wp_send_json_error(['message' => 'Sem permissão.'], 403);
+        }
+
+        check_ajax_referer('pdfw_import', 'nonce');
+
+        $raw_item = isset($_POST['item']) ? wp_unslash((string) $_POST['item']) : '';
+        $item = json_decode($raw_item, true);
+        if (! is_array($item)) {
+            wp_send_json_error(['message' => 'Item inválido para processamento.'], 400);
+        }
+
+        $result = PDFW_Ingestor::process_single_drive_item($item);
+        $audit = $this->sanitize_audit_items([
+            is_array($result['audit'] ?? null) ? $result['audit'] : [],
+        ]);
+        $audit_item = $audit[0] ?? [
+            'source' => 'drive',
+            'name' => sanitize_text_field((string) ($item['name'] ?? 'arquivo')),
+            'kind' => 'skip',
+            'recipes_count' => 0,
+            'note' => '',
+        ];
+
+        $response = [
+            'success' => (bool) ($result['success'] ?? false),
+            'type' => sanitize_key((string) ($result['type'] ?? 'content')),
+            'logs' => is_array($result['logs'] ?? null) ? $result['logs'] : [],
+            'audit' => $audit_item,
+            'recipes' => [],
+            'images' => [],
+            'prepared_recipes_raw' => '',
+        ];
+
+        if ($response['success']) {
+            if ($response['type'] === 'image') {
+                $image = is_array($result['data'] ?? null) ? $result['data'] : [];
+                if ($image) {
+                    $response['images'][] = $image;
+                }
+            } else {
+                $recipes = is_array($result['data'] ?? null) ? $result['data'] : [];
+                $response['recipes'] = $recipes;
+                $response['prepared_recipes_raw'] = $this->recipes_to_raw($recipes);
+            }
+        }
+
+        wp_send_json_success($response);
+    }
+
     public function handle_generate(): void
     {
         if (! current_user_can('manage_options')) {
@@ -120,7 +198,7 @@ class PDFW_Admin_Page
             $html = (string) ($cached['html'] ?? '');
             $import_notice = (string) ($cached['notice'] ?? '');
         } else {
-            $prepared = $this->prepare_render_data($payload);
+            $prepared = $this->prepare_render_data($payload, false);
             $payload = $prepared['payload'];
             $final_recipes = $prepared['recipes'];
             $import_notice = $prepared['notice'];
@@ -166,7 +244,7 @@ class PDFW_Admin_Page
             $preview_mode = 'pdf';
         }
 
-        $prepared = $this->prepare_render_data($payload);
+        $prepared = $this->prepare_render_data($payload, false);
         $prepared_payload = $prepared['payload'];
         $html = PDFW_Renderer::render($prepared_payload, $prepared['recipes']);
         $cache_key = $this->save_preview_cache($prepared_payload, $html, (string) $prepared['notice']);
@@ -289,12 +367,21 @@ class PDFW_Admin_Page
      *   audit_items: array<int, array<string, mixed>>
      * }
      */
-    private function prepare_render_data(array $payload): array
+    private function prepare_render_data(array $payload, bool $run_ingestion = true): array
     {
-        $imported = PDFW_Ingestor::ingest(
-            is_array($_FILES['source_files'] ?? null) ? $_FILES['source_files'] : [],
-            (string) ($payload['drive_folder_url'] ?? '')
-        );
+        $imported = $run_ingestion
+            ? PDFW_Ingestor::ingest(
+                is_array($_FILES['source_files'] ?? null) ? $_FILES['source_files'] : [],
+                (string) ($payload['drive_folder_url'] ?? '')
+            )
+            : [
+                'recipes' => [],
+                'logs' => [],
+                'imported_files' => 0,
+                'image_entries' => [],
+                'cover_image' => '',
+                'audit_items' => [],
+            ];
         $manual_recipes = PDFW_Renderer::recipes_from_raw((string) ($payload['recipes_raw'] ?? ''));
         $imported_recipes = is_array($imported['recipes'] ?? null) ? $imported['recipes'] : [];
 
@@ -404,7 +491,7 @@ class PDFW_Admin_Page
             }
 
             $kind = sanitize_key((string) ($item['kind'] ?? 'skip'));
-            if (! in_array($kind, ['recipe', 'image', 'skip', 'error'], true)) {
+            if (! in_array($kind, ['recipe', 'generic', 'image', 'skip', 'error'], true)) {
                 $kind = 'skip';
             }
 
@@ -700,19 +787,28 @@ class PDFW_Admin_Page
                 $block[] = 'Imagem: ' . $image;
             }
 
-            $block[] = 'Ingredientes:';
-            if ($ingredients) {
-                $block = array_merge($block, $ingredients);
-            } else {
-                $block[] = '- Ingredientes conforme orientação nutricional.';
-            }
+            $is_generic_flag = ! empty($recipe['isGeneric']) || ! empty($recipe['is_generic']);
+            $has_recipe_data = ! empty($ingredients)
+                || ! empty($steps)
+                || $tempo !== ''
+                || $porcoes !== ''
+                || $dificuldade !== '';
 
-            $block[] = 'Modo de preparo:';
-            if ($steps) {
-                $block = array_merge($block, $steps);
-            } else {
-                $block[] = '1. Organize os ingredientes.';
-                $block[] = '2. Faça o preparo conforme orientação.';
+            if (! $is_generic_flag && $has_recipe_data) {
+                $block[] = 'Ingredientes:';
+                if ($ingredients) {
+                    $block = array_merge($block, $ingredients);
+                } else {
+                    $block[] = '- Ingredientes conforme orientação nutricional.';
+                }
+
+                $block[] = 'Modo de preparo:';
+                if ($steps) {
+                    $block = array_merge($block, $steps);
+                } else {
+                    $block[] = '1. Organize os ingredientes.';
+                    $block[] = '2. Faça o preparo conforme orientação.';
+                }
             }
 
             if ($tip !== '') {
@@ -720,7 +816,10 @@ class PDFW_Admin_Page
                 $block[] = $tip;
             }
 
-            if ($nutrition_kcal !== '' || $nutrition_carb !== '' || $nutrition_prot !== '' || $nutrition_fat !== '' || $nutrition_fiber !== '') {
+            if (
+                ! $is_generic_flag
+                && ($nutrition_kcal !== '' || $nutrition_carb !== '' || $nutrition_prot !== '' || $nutrition_fat !== '' || $nutrition_fiber !== '')
+            ) {
                 $block[] = 'Informação Nutricional:';
                 if ($nutrition_kcal !== '') {
                     $block[] = 'Calorias: ' . $nutrition_kcal;
