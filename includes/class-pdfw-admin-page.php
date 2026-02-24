@@ -76,7 +76,22 @@ class PDFW_Admin_Page
         $payload = $this->collect_payload_from_request();
         update_option(self::OPTION_KEY, $payload, false);
 
-        $html = PDFW_Renderer::render($payload);
+        $imported = PDFW_Ingestor::ingest(
+            is_array($_FILES['source_files'] ?? null) ? $_FILES['source_files'] : [],
+            (string) ($payload['drive_folder_url'] ?? '')
+        );
+        $manual_recipes = PDFW_Renderer::recipes_from_raw((string) ($payload['recipes_raw'] ?? ''));
+        $imported_recipes = $imported['recipes'];
+
+        if (($payload['import_mode'] ?? 'append') === 'replace' && ! empty($imported_recipes)) {
+            $final_recipes = $imported_recipes;
+        } else {
+            $final_recipes = PDFW_Renderer::merge_recipes($manual_recipes, $imported_recipes);
+        }
+
+        $import_notice = PDFW_Ingestor::logs_to_notice($imported['logs']);
+
+        $html = PDFW_Renderer::render($payload, $final_recipes);
         $slug = sanitize_title($payload['title']);
         if ($slug === '') {
             $slug = 'ebook';
@@ -89,7 +104,11 @@ class PDFW_Admin_Page
 
         $result = PDFW_Exporter::html_to_pdf($html);
         if (! $result['ok']) {
-            set_transient(self::NOTICE_KEY, $result['error'], 90);
+            $msg = trim($result['error']);
+            if ($import_notice !== '') {
+                $msg .= "\n\n" . $import_notice;
+            }
+            set_transient(self::NOTICE_KEY, $msg, 90);
             wp_safe_redirect(admin_url('admin.php?page=pdfw-studio'));
             exit;
         }
@@ -107,6 +126,11 @@ class PDFW_Admin_Page
         $recipes_raw = isset($_POST['recipes_raw']) ? wp_unslash((string) $_POST['recipes_raw']) : '';
         $about_raw = isset($_POST['about']) ? wp_unslash((string) $_POST['about']) : '';
         $tips_raw = isset($_POST['tips']) ? wp_unslash((string) $_POST['tips']) : '';
+        $drive_folder_url = isset($_POST['drive_folder_url']) ? wp_unslash((string) $_POST['drive_folder_url']) : '';
+        $import_mode = isset($_POST['import_mode']) ? sanitize_key((string) $_POST['import_mode']) : 'append';
+        if (! in_array($import_mode, ['append', 'replace'], true)) {
+            $import_mode = 'append';
+        }
 
         return [
             'title' => sanitize_text_field((string) ($_POST['title'] ?? 'Ebook')),
@@ -117,6 +141,8 @@ class PDFW_Admin_Page
             'recipes_raw' => trim($recipes_raw),
             'about' => trim($about_raw),
             'tips' => trim($tips_raw),
+            'drive_folder_url' => esc_url_raw(trim($drive_folder_url)),
+            'import_mode' => $import_mode,
         ];
     }
 

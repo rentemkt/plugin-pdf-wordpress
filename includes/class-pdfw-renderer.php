@@ -24,6 +24,8 @@ class PDFW_Renderer
             'author' => 'Daniel Cady',
             'seal' => 'Material exclusivo do curso {title} desenvolvido por {author}',
             'theme' => 'grafite-dourado',
+            'drive_folder_url' => '',
+            'import_mode' => 'append',
             'tips' => implode("\n", [
                 'Monte um planejamento semanal de refeições.',
                 'Prefira ingredientes frescos e minimamente processados.',
@@ -37,11 +39,17 @@ class PDFW_Renderer
         ];
     }
 
-    public static function render(array $payload): string
+    /**
+     * @param array<int, array<string, mixed>>|null $recipes_override
+     */
+    public static function render(array $payload, ?array $recipes_override = null): string
     {
         $theme_key = $payload['theme'] ?? 'grafite-dourado';
         $theme = self::theme_palette($theme_key);
-        $recipes = self::parse_recipes((string) ($payload['recipes_raw'] ?? ''));
+        $recipes = is_array($recipes_override) ? $recipes_override : self::parse_recipes((string) ($payload['recipes_raw'] ?? ''));
+        if (! $recipes) {
+            $recipes = self::parse_recipes(self::sample_recipes_raw());
+        }
 
         $title = self::h((string) ($payload['title'] ?? 'Ebook'));
         $subtitle = self::h((string) ($payload['subtitle'] ?? 'Receitas práticas'));
@@ -114,6 +122,45 @@ class PDFW_Renderer
       background: ' . $theme['page_bg'] . ';
       @bottom-left { content: "' . $seal . '"; font-size: 8pt; color: ' . $theme['muted'] . '; }
       @bottom-center { content: counter(page); font-size: 9pt; color: ' . $theme['muted'] . '; }
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public static function recipes_from_raw(string $raw): array
+    {
+        return self::parse_recipes($raw);
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $manual
+     * @param array<int, array<string, mixed>> $imported
+     * @return array<int, array<string, mixed>>
+     */
+    public static function merge_recipes(array $manual, array $imported): array
+    {
+        $all = array_merge($manual, $imported);
+        $seen = [];
+        $out = [];
+        foreach ($all as $recipe) {
+            $title = isset($recipe['title']) ? (string) $recipe['title'] : '';
+            if ($title === '') {
+                continue;
+            }
+            $key = sanitize_title(remove_accents(mb_strtolower($title)));
+            $score = count((array) ($recipe['ingredients'] ?? [])) + count((array) ($recipe['steps'] ?? []));
+            if (! isset($seen[$key])) {
+                $seen[$key] = ['idx' => count($out), 'score' => $score];
+                $out[] = $recipe;
+                continue;
+            }
+            if ($score > (int) $seen[$key]['score']) {
+                $idx = (int) $seen[$key]['idx'];
+                $out[$idx] = $recipe;
+                $seen[$key]['score'] = $score;
+            }
+        }
+        return array_values($out);
     }
     * { box-sizing: border-box; }
     body { margin: 0; color: ' . $theme['text'] . '; font: 11pt/1.45 "Segoe UI", Arial, sans-serif; }

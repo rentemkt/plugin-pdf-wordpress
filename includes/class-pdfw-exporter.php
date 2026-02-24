@@ -8,15 +8,20 @@ class PDFW_Exporter
 {
     public static function html_to_pdf(string $html): array
     {
-        $autoload = PDFW_PLUGIN_DIR . 'vendor/autoload.php';
-        if (file_exists($autoload)) {
-            require_once $autoload;
+        $autoload_candidates = [
+            PDFW_PLUGIN_DIR . 'vendor/autoload.php',
+            PDFW_PLUGIN_DIR . 'lib/dompdf/autoload.inc.php',
+        ];
+        foreach ($autoload_candidates as $autoload) {
+            if (file_exists($autoload)) {
+                require_once $autoload;
+            }
         }
 
         if (! class_exists('\Dompdf\Dompdf')) {
             return [
                 'ok' => false,
-                'error' => 'Biblioteca PDF ausente. Rode `composer install` dentro do plugin para habilitar exportação PDF.',
+                'error' => 'Biblioteca PDF ausente. Instale via Composer ou inclua `lib/dompdf` no plugin.',
                 'content' => '',
             ];
         }

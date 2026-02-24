@@ -6,10 +6,10 @@
   <p class="description">Monte o conteúdo, escolha o tema e exporte em HTML ou PDF.</p>
 
   <?php if ($notice): ?>
-    <div class="notice notice-warning"><p><?php echo esc_html($notice); ?></p></div>
+    <div class="notice notice-warning"><p><?php echo wp_kses_post(nl2br(esc_html($notice))); ?></p></div>
   <?php endif; ?>
 
-  <form method="post" action="<?php echo esc_url($action_url); ?>" class="pdfw-form">
+  <form method="post" action="<?php echo esc_url($action_url); ?>" class="pdfw-form" enctype="multipart/form-data">
     <?php wp_nonce_field('pdfw_generate'); ?>
     <input type="hidden" name="action" value="pdfw_generate">
 
@@ -43,6 +43,34 @@
         <h2>Receitas</h2>
         <p class="hint">Separe receitas com <code>---</code>.</p>
         <textarea name="recipes_raw" rows="22"><?php echo esc_textarea($payload['recipes_raw']); ?></textarea>
+      </section>
+    </div>
+
+    <div class="pdfw-grid">
+      <section class="pdfw-card">
+        <h2>Importação automática</h2>
+        <label>Upload de arquivos
+          <input type="file" name="source_files[]" multiple accept=".txt,.md,.html,.htm,.docx,.pdf">
+        </label>
+        <p class="hint">Suporta: TXT, MD, HTML, DOCX e PDF (PDF depende de parser instalado).</p>
+        <label>Link da pasta pública do Google Drive
+          <input type="url" name="drive_folder_url" value="<?php echo esc_attr((string) ($payload['drive_folder_url'] ?? '')); ?>" placeholder="https://drive.google.com/drive/folders/...">
+        </label>
+        <p class="hint">Importa também subpastas automaticamente (até 4 níveis).</p>
+        <label>Modo de importação
+          <select name="import_mode">
+            <option value="append" <?php selected((string) ($payload['import_mode'] ?? 'append'), 'append'); ?>>Somar com receitas do campo manual</option>
+            <option value="replace" <?php selected((string) ($payload['import_mode'] ?? 'append'), 'replace'); ?>>Substituir por receitas importadas</option>
+          </select>
+        </label>
+      </section>
+      <section class="pdfw-card">
+        <h2>Como estruturar receita (manual)</h2>
+        <p class="hint">
+          Use o padrão:
+          <code>Título</code>, <code>Ingredientes:</code>, <code>Modo de preparo:</code>, <code>Dica:</code>.<br>
+          Separe receitas com <code>---</code>.
+        </p>
       </section>
     </div>
 

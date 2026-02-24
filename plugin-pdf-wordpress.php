@@ -18,6 +18,7 @@ define('PDFW_PLUGIN_URL', plugin_dir_url(__FILE__));
 
 require_once PDFW_PLUGIN_DIR . 'includes/class-pdfw-renderer.php';
 require_once PDFW_PLUGIN_DIR . 'includes/class-pdfw-exporter.php';
+require_once PDFW_PLUGIN_DIR . 'includes/class-pdfw-ingestor.php';
 require_once PDFW_PLUGIN_DIR . 'includes/class-pdfw-admin-page.php';
 require_once PDFW_PLUGIN_DIR . 'includes/class-pdfw-plugin.php';
 

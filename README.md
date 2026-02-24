@@ -8,8 +8,10 @@ MVP funcional (v0.1.0):
 
 - tela admin `PDF Ebook Studio`
 - edição de título, autor, tema, receitas, dicas e seção sobre o autor
+- importação automática por upload (`txt`, `md`, `html`, `docx`, `pdf`)
+- importação automática por link público de pasta Google Drive (com subpastas)
 - exportação em `HTML`
-- exportação em `PDF` com `dompdf` (opcional via Composer)
+- exportação em `PDF` com `dompdf` embutido no plugin
 
 ## Estrutura
 
@@ -30,14 +32,7 @@ plugin-pdf-wordpress/
 git clone https://github.com/rentemkt/plugin-pdf-wordpress.git
 ```
 
-2. (Opcional) Habilitar exportação PDF:
-
-```bash
-cd plugin-pdf-wordpress
-composer install --no-dev
-```
-
-3. Compacte a pasta e instale em `wp-admin > Plugins > Adicionar novo > Enviar plugin`.
+2. Compacte a pasta e instale em `wp-admin > Plugins > Adicionar novo > Enviar plugin`.
 
 ## Uso
 
@@ -48,5 +43,7 @@ composer install --no-dev
 ## Observações
 
 - Sem `dompdf`, o botão de PDF mostra aviso no painel.
-- O MVP usa edição manual de receitas por texto com separador `---`.
+- O campo manual de receitas usa separador `---`.
+- Importação do Google Drive requer pasta pública (link compartilhável).
+- A varredura de subpastas do Drive é limitada (profundidade 4 e até 80 arquivos).
 - Próximas fases (parser DOCX/PDF, QA e automações) estão em `docs/ROADMAP.md`.
