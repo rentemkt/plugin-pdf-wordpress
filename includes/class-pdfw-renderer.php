@@ -124,44 +124,6 @@ class PDFW_Renderer
       @bottom-center { content: counter(page); font-size: 9pt; color: ' . $theme['muted'] . '; }
     }
 
-    /**
-     * @return array<int, array<string, mixed>>
-     */
-    public static function recipes_from_raw(string $raw): array
-    {
-        return self::parse_recipes($raw);
-    }
-
-    /**
-     * @param array<int, array<string, mixed>> $manual
-     * @param array<int, array<string, mixed>> $imported
-     * @return array<int, array<string, mixed>>
-     */
-    public static function merge_recipes(array $manual, array $imported): array
-    {
-        $all = array_merge($manual, $imported);
-        $seen = [];
-        $out = [];
-        foreach ($all as $recipe) {
-            $title = isset($recipe['title']) ? (string) $recipe['title'] : '';
-            if ($title === '') {
-                continue;
-            }
-            $key = sanitize_title(remove_accents(mb_strtolower($title)));
-            $score = count((array) ($recipe['ingredients'] ?? [])) + count((array) ($recipe['steps'] ?? []));
-            if (! isset($seen[$key])) {
-                $seen[$key] = ['idx' => count($out), 'score' => $score];
-                $out[] = $recipe;
-                continue;
-            }
-            if ($score > (int) $seen[$key]['score']) {
-                $idx = (int) $seen[$key]['idx'];
-                $out[$idx] = $recipe;
-                $seen[$key]['score'] = $score;
-            }
-        }
-        return array_values($out);
-    }
     * { box-sizing: border-box; }
     body { margin: 0; color: ' . $theme['text'] . '; font: 11pt/1.45 "Segoe UI", Arial, sans-serif; }
     .cover {
@@ -236,6 +198,51 @@ class PDFW_Renderer
   </section>
 </body>
 </html>';
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public static function recipes_from_raw(string $raw): array
+    {
+        return self::parse_recipes($raw);
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $manual
+     * @param array<int, array<string, mixed>> $imported
+     * @return array<int, array<string, mixed>>
+     */
+    public static function merge_recipes(array $manual, array $imported): array
+    {
+        $all = array_merge($manual, $imported);
+        $seen = [];
+        $out = [];
+
+        foreach ($all as $recipe) {
+            $title = isset($recipe['title']) ? (string) $recipe['title'] : '';
+            if ($title === '') {
+                continue;
+            }
+
+            $normalized = mb_strtolower($title, 'UTF-8');
+            $key = sanitize_title(remove_accents($normalized));
+            $score = count((array) ($recipe['ingredients'] ?? [])) + count((array) ($recipe['steps'] ?? []));
+
+            if (! isset($seen[$key])) {
+                $seen[$key] = ['idx' => count($out), 'score' => $score];
+                $out[] = $recipe;
+                continue;
+            }
+
+            if ($score > (int) $seen[$key]['score']) {
+                $idx = (int) $seen[$key]['idx'];
+                $out[$idx] = $recipe;
+                $seen[$key]['score'] = $score;
+            }
+        }
+
+        return array_values($out);
     }
 
     private static function sample_recipes_raw(): string
