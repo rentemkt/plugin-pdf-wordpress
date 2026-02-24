@@ -61,15 +61,30 @@ O ebook gerado inclui:
 - API: `https://transcrever.rente.com.br/v1/audio/transcriptions`
 - Landing: `https://transcrever.rente.com.br/`
 
+## Requisitos
+
+| Requisito | Obrigatório | Nota |
+|-----------|------------|------|
+| PHP >= 7.4 | Sim | Plugin bloqueia ativação em versão inferior |
+| WordPress >= 5.9 | Sim | |
+| `mbstring` | Recomendado | Warning no painel se ausente; fallback automático via `pdfw-compat.php` |
+| `dompdf/dompdf ^2.0` | Sim (para PDF) | Via Composer ou bundle em `lib/dompdf/` |
+| Python 3 | Recomendado | Extração de texto de PDFs (caminho oficial) |
+| Tesseract OCR + poppler-utils | Opcional | OCR para PDFs baseados em imagem |
+| FFmpeg | Opcional | Transcrição de áudio/vídeo no Laboratório |
+
 ## Estrutura
 
 ```text
 plugin-pdf-wordpress/
   ├─ plugin-pdf-wordpress.php
   ├─ includes/
+  │   ├─ pdfw-compat.php (wrappers mbstring safe)
+  │   ├─ class-pdfw-plugin.php
   │   ├─ class-pdfw-admin-page.php
   │   ├─ class-pdfw-renderer.php
-  │   └─ class-pdfw-ingestor.php
+  │   ├─ class-pdfw-ingestor.php
+  │   └─ class-pdfw-exporter.php
   ├─ templates/
   │   └─ admin-page.php
   ├─ assets/

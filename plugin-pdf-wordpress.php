@@ -30,12 +30,17 @@ register_activation_hook(__FILE__, static function (): void {
     }
 });
 
-// Admin notice if mbstring is absent
+// Admin notice if mbstring is absent (only on plugin page)
 add_action('admin_notices', static function (): void {
-    if (! extension_loaded('mbstring')) {
-        echo '<div class="notice notice-warning"><p><strong>PDF Ebook Studio:</strong> '
-            . 'extensão <code>mbstring</code> não detectada. Caracteres especiais podem não funcionar corretamente.</p></div>';
+    if (extension_loaded('mbstring')) {
+        return;
     }
+    $screen = function_exists('get_current_screen') ? get_current_screen() : null;
+    if ($screen === null || $screen->id !== 'toplevel_page_pdfw-studio') {
+        return;
+    }
+    echo '<div class="notice notice-warning"><p><strong>PDF Ebook Studio:</strong> '
+        . 'extensão <code>mbstring</code> não detectada. Caracteres especiais podem não funcionar corretamente.</p></div>';
 });
 
 require_once PDFW_PLUGIN_DIR . 'includes/pdfw-compat.php';

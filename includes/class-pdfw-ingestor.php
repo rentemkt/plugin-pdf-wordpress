@@ -2725,7 +2725,7 @@ class PDFW_Ingestor
                 if (trim($fallback_text) !== '') {
                     return self::normalize_text($fallback_text);
                 }
-                $logs[] = 'PDF processado via extração Python/OCR (modo padrão).';
+                $logs[] = 'Extração PDF via Python/OCR tentada, mas sem texto extraído.';
                 return '';
             }
             $tmp = $path_hint !== '' ? $path_hint : self::write_temp_file($contents, '.pdf');

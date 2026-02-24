@@ -839,17 +839,27 @@ class PDFW_Admin_Page
 
     private function has_pending_uploads(): bool
     {
+        // Check local file uploads
         $files = $_FILES['source_files'] ?? null;
-        if (! is_array($files) || empty($files['name'])) {
-            return false;
+        if (is_array($files) && ! empty($files['name'])) {
+            $names = is_array($files['name']) ? $files['name'] : [];
+            $errors = is_array($files['error'] ?? null) ? $files['error'] : [];
+            foreach ($names as $idx => $name) {
+                if ((string) $name !== '' && (int) ($errors[$idx] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE) {
+                    return true;
+                }
+            }
         }
-        $names = is_array($files['name']) ? $files['name'] : [];
-        $errors = is_array($files['error'] ?? null) ? $files['error'] : [];
-        foreach ($names as $idx => $name) {
-            if ((string) $name !== '' && (int) ($errors[$idx] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE) {
+
+        // Check Drive URL filled but content not yet imported
+        $drive_url = isset($_POST['drive_folder_url']) ? trim((string) $_POST['drive_folder_url']) : '';
+        if ($drive_url !== '') {
+            $recipes_raw = isset($_POST['recipes_raw']) ? trim((string) $_POST['recipes_raw']) : '';
+            if ($recipes_raw === '' || $recipes_raw === trim(PDFW_Renderer::default_payload()['recipes_raw'])) {
                 return true;
             }
         }
+
         return false;
     }
 
