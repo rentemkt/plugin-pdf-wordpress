@@ -9,6 +9,7 @@
   const previewStatus = document.getElementById('pdfw-preview-status');
   const previewLog = document.getElementById('pdfw-preview-log');
   const previewNonce = document.getElementById('pdfw-preview-nonce')?.value || '';
+  let previewObjectUrl = '';
 
   const sampleRecipes = `Panqueca de Banana
 Ingredientes:
@@ -83,6 +84,22 @@ Finalize com azeite extravirgem após o preparo.`;
     previewLog.textContent = clean;
   };
 
+  const clearPreviewUrl = () => {
+    if (!previewObjectUrl) return;
+    URL.revokeObjectURL(previewObjectUrl);
+    previewObjectUrl = '';
+  };
+
+  const base64ToBlob = (base64, contentType) => {
+    const binary = atob(base64);
+    const len = binary.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return new Blob([bytes], { type: contentType });
+  };
+
   const extractError = (payload, fallback) => {
     if (payload && payload.data && typeof payload.data.message === 'string') {
       return payload.data.message;
@@ -121,16 +138,25 @@ Finalize com azeite extravirgem após o preparo.`;
         throw new Error(extractError(payload, 'Falha ao gerar pré-visualização.'));
       }
 
-      const html = payload?.data?.html || '';
+      const pdfBase64 = payload?.data?.pdf_base64 || '';
+      if (!pdfBase64) {
+        throw new Error('Pré-visualização sem PDF retornado pelo servidor.');
+      }
+
+      const pdfBlob = base64ToBlob(pdfBase64, 'application/pdf');
+      clearPreviewUrl();
+      previewObjectUrl = URL.createObjectURL(pdfBlob);
+
       if (previewFrame) {
-        previewFrame.srcdoc = html;
+        previewFrame.removeAttribute('srcdoc');
+        previewFrame.src = previewObjectUrl;
       }
 
       setLog(payload?.data?.notice || '');
       if (downloadPdfButton) {
         downloadPdfButton.style.display = 'inline-flex';
       }
-      setStatus('Pré-visualização atualizada. Se estiver tudo certo, clique em Baixar PDF.');
+      setStatus('Pré-visualização paginada atualizada. Se estiver tudo certo, clique em Baixar PDF.');
     } catch (err) {
       setStatus('Erro na pré-visualização. Ajuste os dados e tente novamente.');
       const message = err instanceof Error ? err.message : 'Erro inesperado';
@@ -147,4 +173,6 @@ Finalize com azeite extravirgem após o preparo.`;
       generatePreview();
     });
   }
+
+  window.addEventListener('beforeunload', clearPreviewUrl);
 })();

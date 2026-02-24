@@ -120,9 +120,24 @@ class PDFW_Admin_Page
 
         $prepared = $this->prepare_render_data($payload);
         $html = PDFW_Renderer::render($prepared['payload'], $prepared['recipes']);
+        $result = PDFW_Exporter::html_to_pdf($html);
+
+        if (! $result['ok']) {
+            $msg = trim((string) ($result['error'] ?? 'Falha ao gerar PDF de pré-visualização.'));
+            if ($prepared['notice'] !== '') {
+                $msg .= "\n\n" . $prepared['notice'];
+            }
+            wp_send_json_error(['message' => $msg], 500);
+        }
+
+        $slug = sanitize_title((string) ($prepared['payload']['title'] ?? 'ebook'));
+        if ($slug === '') {
+            $slug = 'ebook';
+        }
 
         wp_send_json_success([
-            'html' => $html,
+            'pdf_base64' => base64_encode((string) $result['content']),
+            'filename' => $slug . '.pdf',
             'notice' => $prepared['notice'],
         ]);
     }

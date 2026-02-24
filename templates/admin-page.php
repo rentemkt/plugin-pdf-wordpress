@@ -98,7 +98,7 @@
 
     <section class="pdfw-card pdfw-preview-card">
       <h2>Pré-visualização</h2>
-      <p class="hint">Clique em <strong>Gerar PDF (prévia)</strong>, revise o resultado e depois clique em <strong>Baixar PDF</strong>.</p>
+      <p class="hint">Clique em <strong>Gerar PDF (prévia)</strong> para ver o PDF paginado, revise e depois clique em <strong>Baixar PDF</strong>.</p>
       <p class="hint" id="pdfw-preview-status">Nenhuma prévia gerada ainda.</p>
       <pre id="pdfw-preview-log" class="pdfw-preview-log" hidden></pre>
       <iframe id="pdfw-preview-frame" title="Prévia do ebook"></iframe>
