@@ -2914,7 +2914,9 @@ class PDFW_Ingestor
      */
     private static function extract_recipes_from_text(string $text, string $fallback_title): array
     {
-        $has_recipe_markers = (bool) preg_match('/\\bingredientes?\\b|\\bmodo\\s+de\\s+preparo\\b|\\bpreparo\\b/iu', $text);
+        // Require BOTH ingredients AND prep method for recipe classification
+        $has_recipe_markers = (bool) preg_match('/\\bingredientes?\\b/iu', $text)
+            && (bool) preg_match('/\\bmodo\\s+de\\s+preparo\\b/iu', $text);
         if ($has_recipe_markers) {
             $raw_recipes = PDFW_Renderer::recipes_from_raw($text);
             if (! empty($raw_recipes)) {

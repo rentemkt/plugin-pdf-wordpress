@@ -903,6 +903,46 @@ HTML;
                 && $dificuldade === ''
                 && ! $has_nutrition;
 
+            // Detect "fake recipes": educational text incorrectly classified as recipe.
+            // Real ingredients are short (e.g. "2 ovos", "100g farinha"). If average
+            // ingredient line > 50 chars, it's likely paragraph text, not ingredients.
+            if (! $is_generic && $ingredients) {
+                $total_len = 0;
+                foreach ($ingredients as $ing) {
+                    $total_len += pdfw_mb_strlen((string) $ing);
+                }
+                $avg_len = $total_len / max(count($ingredients), 1);
+                if ($avg_len > 50) {
+                    // Recover educational content from misclassified recipe fields
+                    $recovered_body = [];
+                    foreach ($ingredients as $ing) {
+                        $line = trim((string) $ing);
+                        if ($line !== '' && $line !== '(sem ingredientes detectados)') {
+                            $recovered_body[] = $line;
+                        }
+                    }
+                    foreach ($steps as $st) {
+                        $line = trim((string) $st);
+                        if ($line !== '') {
+                            $recovered_body[] = $line;
+                        }
+                    }
+                    if (! $body_lines && ! $description_lines) {
+                        $body_lines = $recovered_body;
+                        if (! $description && $recovered_body) {
+                            $first = $recovered_body[0];
+                            $description = pdfw_mb_strlen($first) > 200
+                                ? pdfw_mb_substr($first, 0, 200) . '…'
+                                : $first;
+                        }
+                    }
+                    $is_generic = true;
+                    $ingredients = [];
+                    $steps = [];
+                    $has_recipe_marker = false;
+                }
+            }
+
             if (! $is_generic && ! $ingredients) {
                 $ingredients = ['(sem ingredientes detectados)'];
             }
