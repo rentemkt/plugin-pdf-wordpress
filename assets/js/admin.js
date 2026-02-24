@@ -2665,6 +2665,14 @@ Finalize com azeite extravirgem após o preparo.`;
   const generatePreview = async (mode) => {
     if (previewBusy) return;
 
+    // Exige projeto criado/carregado
+    const hasProject = Boolean(currentProjectId || normalizeLine(projectNameInput?.value || ''));
+    if (!hasProject) {
+      activateSection('projetos');
+      showToast('Crie ou abra um projeto antes de gerar prévia.', 'error');
+      return;
+    }
+
     syncRawFromRecipes();
     previewBusy = true;
     setPreviewButtonsDisabled(true);
@@ -2784,6 +2792,16 @@ Finalize com azeite extravirgem após o preparo.`;
 
   const runImport = async () => {
     if (importBusy) return;
+
+    // Exige projeto criado/carregado antes de importar
+    const hasProject = Boolean(currentProjectId || normalizeLine(projectNameInput?.value || ''));
+    if (!hasProject) {
+      activateSection('projetos');
+      setImportStatus('Crie ou abra um projeto antes de importar conteúdo.', 'error');
+      hideImportProgress();
+      showToast('Crie ou abra um projeto antes de importar.', 'error');
+      return;
+    }
 
     const driveUrl = normalizeLine(driveInput?.value || '');
     const filesInput = form.querySelector('input[name="source_files[]"]');
@@ -3587,6 +3605,16 @@ Finalize com azeite extravirgem após o preparo.`;
     updateSidebarMeta();
     activateSection(activeSection, false);
   };
+
+  // Bloqueia submit de exportação (Gerar HTML / Baixar PDF) sem projeto
+  form.addEventListener('submit', (event) => {
+    const hasProject = Boolean(currentProjectId || normalizeLine(projectNameInput?.value || ''));
+    if (!hasProject) {
+      event.preventDefault();
+      activateSection('projetos');
+      showToast('Crie ou abra um projeto antes de exportar.', 'error');
+    }
+  });
 
   bootstrap();
   window.addEventListener('beforeunload', clearPreviewUrl);
