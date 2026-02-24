@@ -8,6 +8,9 @@ class PDFW_Admin_Page
 {
     private const OPTION_KEY = 'pdfw_last_payload';
     private const NOTICE_KEY = 'pdfw_notice';
+    private const PROJECTS_OPTION_KEY = 'pdfw_projects_store';
+    private const PREVIEW_CACHE_PREFIX = 'pdfw_preview_cache_';
+    private const PREVIEW_CACHE_TTL = 1800;
 
     public function register_menu(): void
     {
@@ -62,8 +65,43 @@ class PDFW_Admin_Page
         $themes = PDFW_Renderer::theme_options();
         $action_url = admin_url('admin-post.php');
         $preview_nonce = wp_create_nonce('pdfw_preview');
+        $projects_nonce = wp_create_nonce('pdfw_projects');
+        $import_nonce = wp_create_nonce('pdfw_import');
 
         include PDFW_PLUGIN_DIR . 'templates/admin-page.php';
+    }
+
+    public function handle_import(): void
+    {
+        if (! current_user_can('manage_options')) {
+            wp_send_json_error(['message' => 'Sem permissão.'], 403);
+        }
+
+        check_ajax_referer('pdfw_import', 'nonce');
+
+        $payload = $this->collect_payload_from_request();
+        update_option(self::OPTION_KEY, $payload, false);
+
+        $prepared = $this->prepare_render_data($payload);
+        $prepared_payload = is_array($prepared['payload']) ? $prepared['payload'] : $payload;
+        $prepared_recipes = is_array($prepared['recipes']) ? $prepared['recipes'] : [];
+        $prepared_recipes_raw = $this->recipes_to_raw($prepared_recipes);
+
+        $cover_image = (string) ($prepared_payload['cover_image'] ?? '');
+        if (strpos($cover_image, 'data:image/') === 0) {
+            $cover_image = '';
+        }
+
+        $audit_items = $this->sanitize_audit_items(is_array($prepared['audit_items'] ?? null) ? $prepared['audit_items'] : []);
+
+        wp_send_json_success([
+            'payload' => $prepared_payload,
+            'prepared_recipes_raw' => $prepared_recipes_raw,
+            'recipes_count' => count($prepared_recipes),
+            'cover_image' => $cover_image,
+            'notice' => (string) ($prepared['notice'] ?? ''),
+            'audit_items' => $audit_items,
+        ]);
     }
 
     public function handle_generate(): void
@@ -77,12 +115,18 @@ class PDFW_Admin_Page
         $payload = $this->collect_payload_from_request();
         update_option(self::OPTION_KEY, $payload, false);
 
-        $prepared = $this->prepare_render_data($payload);
-        $payload = $prepared['payload'];
-        $final_recipes = $prepared['recipes'];
-        $import_notice = $prepared['notice'];
+        $cached = $this->get_cached_html_if_valid($payload);
+        if (is_array($cached)) {
+            $html = (string) ($cached['html'] ?? '');
+            $import_notice = (string) ($cached['notice'] ?? '');
+        } else {
+            $prepared = $this->prepare_render_data($payload);
+            $payload = $prepared['payload'];
+            $final_recipes = $prepared['recipes'];
+            $import_notice = $prepared['notice'];
+            $html = PDFW_Renderer::render($payload, $final_recipes);
+        }
 
-        $html = PDFW_Renderer::render($payload, $final_recipes);
         $slug = sanitize_title($payload['title']);
         if ($slug === '') {
             $slug = 'ebook';
@@ -117,34 +161,133 @@ class PDFW_Admin_Page
 
         $payload = $this->collect_payload_from_request();
         update_option(self::OPTION_KEY, $payload, false);
-
-        $prepared = $this->prepare_render_data($payload);
-        $html = PDFW_Renderer::render($prepared['payload'], $prepared['recipes']);
-        $result = PDFW_Exporter::html_to_pdf($html);
-
-        if (! $result['ok']) {
-            $msg = trim((string) ($result['error'] ?? 'Falha ao gerar PDF de pré-visualização.'));
-            if ($prepared['notice'] !== '') {
-                $msg .= "\n\n" . $prepared['notice'];
-            }
-            wp_send_json_error(['message' => $msg], 500);
+        $preview_mode = isset($_POST['preview_mode']) ? sanitize_key((string) $_POST['preview_mode']) : 'pdf';
+        if (! in_array($preview_mode, ['pdf', 'html'], true)) {
+            $preview_mode = 'pdf';
         }
 
-        $slug = sanitize_title((string) ($prepared['payload']['title'] ?? 'ebook'));
+        $prepared = $this->prepare_render_data($payload);
+        $prepared_payload = $prepared['payload'];
+        $html = PDFW_Renderer::render($prepared_payload, $prepared['recipes']);
+        $cache_key = $this->save_preview_cache($prepared_payload, $html, (string) $prepared['notice']);
+
+        $slug = sanitize_title((string) ($prepared_payload['title'] ?? 'ebook'));
         if ($slug === '') {
             $slug = 'ebook';
         }
 
-        wp_send_json_success([
-            'pdf_base64' => base64_encode((string) $result['content']),
+        $response = [
             'filename' => $slug . '.pdf',
-            'notice' => $prepared['notice'],
+            'notice' => (string) $prepared['notice'],
+            'preview_mode' => $preview_mode,
+            'cache_key' => $cache_key,
+            'prepared_recipes_raw' => $this->recipes_to_raw($prepared['recipes']),
+        ];
+
+        if ($preview_mode === 'html') {
+            $response['html'] = $html;
+            wp_send_json_success($response);
+        }
+
+        $result = PDFW_Exporter::html_to_pdf($html);
+        if (! $result['ok']) {
+            $msg = trim((string) ($result['error'] ?? 'Falha ao gerar PDF de pré-visualização.'));
+            if ((string) $prepared['notice'] !== '') {
+                $msg .= "\n\n" . (string) $prepared['notice'];
+            }
+            wp_send_json_error(['message' => $msg], 500);
+        }
+
+        $response['pdf_base64'] = base64_encode((string) $result['content']);
+        wp_send_json_success($response);
+    }
+
+    public function handle_projects(): void
+    {
+        if (! current_user_can('manage_options')) {
+            wp_send_json_error(['message' => 'Sem permissão.'], 403);
+        }
+
+        check_ajax_referer('pdfw_projects', 'nonce');
+
+        $op = isset($_POST['project_op']) ? sanitize_key((string) $_POST['project_op']) : 'list';
+        if (! in_array($op, ['list', 'get', 'save', 'delete'], true)) {
+            wp_send_json_error(['message' => 'Operação inválida.'], 400);
+        }
+
+        if ($op === 'list') {
+            $projects = $this->list_projects();
+            wp_send_json_success(['projects' => $projects]);
+        }
+
+        $project_id = isset($_POST['project_id']) ? sanitize_key((string) $_POST['project_id']) : '';
+        if ($project_id === '') {
+            wp_send_json_error(['message' => 'Projeto não informado.'], 400);
+        }
+
+        if ($op === 'get') {
+            $projects_store = $this->projects_store();
+            if (! isset($projects_store[$project_id])) {
+                wp_send_json_error(['message' => 'Projeto não encontrado.'], 404);
+            }
+            wp_send_json_success(['project' => $projects_store[$project_id]]);
+        }
+
+        if ($op === 'delete') {
+            $projects_store = $this->projects_store();
+            if (isset($projects_store[$project_id])) {
+                unset($projects_store[$project_id]);
+                $this->save_projects_store($projects_store);
+            }
+            wp_send_json_success(['deleted' => true]);
+        }
+
+        $name = isset($_POST['project_name']) ? sanitize_text_field((string) $_POST['project_name']) : '';
+        if ($name === '') {
+            $name = 'Projeto sem nome';
+        }
+
+        $client = isset($_POST['project_client']) ? sanitize_text_field((string) $_POST['project_client']) : '';
+        $payload_json = isset($_POST['project_payload']) ? wp_unslash((string) $_POST['project_payload']) : '';
+        $decoded_payload = json_decode($payload_json, true);
+        if (! is_array($decoded_payload)) {
+            wp_send_json_error(['message' => 'Payload do projeto inválido.'], 400);
+        }
+        $payload = $this->sanitize_project_payload($decoded_payload);
+
+        $projects_store = $this->projects_store();
+        $now = gmdate('c');
+        $existing = isset($projects_store[$project_id]) && is_array($projects_store[$project_id]) ? $projects_store[$project_id] : [];
+        if ($project_id === 'new' || ! preg_match('/^p_[a-z0-9]+$/', $project_id)) {
+            $project_id = 'p_' . strtolower(wp_generate_password(12, false, false));
+            $existing = [];
+        }
+
+        $projects_store[$project_id] = [
+            'id' => $project_id,
+            'name' => $name,
+            'client' => $client,
+            'payload' => $payload,
+            'created_at' => (string) ($existing['created_at'] ?? $now),
+            'updated_at' => $now,
+        ];
+        $this->save_projects_store($projects_store);
+
+        wp_send_json_success([
+            'project_id' => $project_id,
+            'project' => $projects_store[$project_id],
+            'projects' => $this->list_projects(),
         ]);
     }
 
     /**
      * @param array<string, mixed> $payload
-     * @return array{payload: array<string, mixed>, recipes: array<int, array<string, mixed>>, notice: string}
+     * @return array{
+     *   payload: array<string, mixed>,
+     *   recipes: array<int, array<string, mixed>>,
+     *   notice: string,
+     *   audit_items: array<int, array<string, mixed>>
+     * }
      */
     private function prepare_render_data(array $payload): array
     {
@@ -177,6 +320,7 @@ class PDFW_Admin_Page
             'payload' => $payload,
             'recipes' => $final_recipes,
             'notice' => PDFW_Ingestor::logs_to_notice(is_array($imported['logs'] ?? null) ? $imported['logs'] : []),
+            'audit_items' => is_array($imported['audit_items'] ?? null) ? $imported['audit_items'] : [],
         ];
     }
 
@@ -188,6 +332,7 @@ class PDFW_Admin_Page
         }
 
         $recipes_raw = isset($_POST['recipes_raw']) ? wp_unslash((string) $_POST['recipes_raw']) : '';
+        $categories_raw = isset($_POST['categories_raw']) ? wp_unslash((string) $_POST['categories_raw']) : '';
         $about_raw = isset($_POST['about']) ? wp_unslash((string) $_POST['about']) : '';
         $tips_raw = isset($_POST['tips']) ? wp_unslash((string) $_POST['tips']) : '';
         $drive_folder_url = isset($_POST['drive_folder_url']) ? wp_unslash((string) $_POST['drive_folder_url']) : '';
@@ -204,6 +349,7 @@ class PDFW_Admin_Page
             'seal' => sanitize_text_field((string) ($_POST['seal'] ?? 'Material exclusivo desenvolvido por {author}')),
             'theme' => $theme,
             'recipes_raw' => trim($recipes_raw),
+            'categories_raw' => $this->sanitize_categories_raw($categories_raw),
             'about' => trim($about_raw),
             'tips' => trim($tips_raw),
             'drive_folder_url' => esc_url_raw(trim($drive_folder_url)),
@@ -222,6 +368,381 @@ class PDFW_Admin_Page
             return $value;
         }
         return esc_url_raw($value);
+    }
+
+    private function sanitize_categories_raw(string $value): string
+    {
+        $value = str_replace("\r\n", "\n", $value);
+        $value = str_replace("\0", '', $value);
+        $value = trim($value);
+        if ($value === '') {
+            return '';
+        }
+
+        if (function_exists('mb_substr')) {
+            return (string) mb_substr($value, 0, 60000, 'UTF-8');
+        }
+
+        return substr($value, 0, 60000);
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $items
+     * @return array<int, array{source: string, name: string, kind: string, recipes_count: int, note: string}>
+     */
+    private function sanitize_audit_items(array $items): array
+    {
+        $output = [];
+        foreach ($items as $item) {
+            if (! is_array($item)) {
+                continue;
+            }
+
+            $source = sanitize_key((string) ($item['source'] ?? 'upload'));
+            if (! in_array($source, ['upload', 'drive'], true)) {
+                $source = 'upload';
+            }
+
+            $kind = sanitize_key((string) ($item['kind'] ?? 'skip'));
+            if (! in_array($kind, ['recipe', 'image', 'skip', 'error'], true)) {
+                $kind = 'skip';
+            }
+
+            $name = sanitize_text_field((string) ($item['name'] ?? 'arquivo'));
+            if ($name === '') {
+                $name = 'arquivo';
+            }
+
+            $recipes_count = max(0, (int) ($item['recipes_count'] ?? 0));
+            $note = sanitize_text_field((string) ($item['note'] ?? ''));
+
+            $output[] = [
+                'source' => $source,
+                'name' => $name,
+                'kind' => $kind,
+                'recipes_count' => $recipes_count,
+                'note' => $note,
+            ];
+        }
+
+        return array_slice($output, 0, 400);
+    }
+
+    /**
+     * @param array<string, mixed> $input
+     * @return array<string, string>
+     */
+    private function sanitize_project_payload(array $input): array
+    {
+        $payload = [
+            'title' => sanitize_text_field((string) ($input['title'] ?? 'Ebook')),
+            'subtitle' => sanitize_text_field((string) ($input['subtitle'] ?? 'Receitas práticas')),
+            'author' => sanitize_text_field((string) ($input['author'] ?? 'Daniel Cady')),
+            'seal' => sanitize_text_field((string) ($input['seal'] ?? 'Material exclusivo desenvolvido por {author}')),
+            'theme' => sanitize_key((string) ($input['theme'] ?? 'ebook2-classic')),
+            'recipes_raw' => trim((string) ($input['recipes_raw'] ?? '')),
+            'categories_raw' => $this->sanitize_categories_raw((string) ($input['categories_raw'] ?? '')),
+            'about' => trim((string) ($input['about'] ?? '')),
+            'tips' => trim((string) ($input['tips'] ?? '')),
+            'drive_folder_url' => esc_url_raw(trim((string) ($input['drive_folder_url'] ?? ''))),
+            'cover_image' => $this->sanitize_image_source((string) ($input['cover_image'] ?? '')),
+            'import_mode' => sanitize_key((string) ($input['import_mode'] ?? 'append')),
+        ];
+
+        if (! array_key_exists($payload['theme'], PDFW_Renderer::theme_options())) {
+            $payload['theme'] = 'ebook2-classic';
+        }
+        if (! in_array($payload['import_mode'], ['append', 'replace'], true)) {
+            $payload['import_mode'] = 'append';
+        }
+
+        return $payload;
+    }
+
+    /**
+     * @return array<string, array<string, mixed>>
+     */
+    private function projects_store(): array
+    {
+        $stored = get_option(self::PROJECTS_OPTION_KEY, []);
+        if (! is_array($stored)) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($stored as $id => $project) {
+            if (! is_string($id) || ! is_array($project)) {
+                continue;
+            }
+            $out[$id] = $project;
+        }
+        return $out;
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $projects
+     */
+    private function save_projects_store(array $projects): void
+    {
+        uasort($projects, static function ($a, $b) {
+            $a_time = isset($a['updated_at']) ? strtotime((string) $a['updated_at']) : 0;
+            $b_time = isset($b['updated_at']) ? strtotime((string) $b['updated_at']) : 0;
+            if ($a_time === $b_time) {
+                return 0;
+            }
+            return $a_time > $b_time ? -1 : 1;
+        });
+        update_option(self::PROJECTS_OPTION_KEY, $projects, false);
+    }
+
+    /**
+     * @return array<int, array{id: string, name: string, client: string, updated_at: string}>
+     */
+    private function list_projects(): array
+    {
+        $projects = $this->projects_store();
+        $list = [];
+        foreach ($projects as $project) {
+            if (! is_array($project)) {
+                continue;
+            }
+            $id = isset($project['id']) ? sanitize_key((string) $project['id']) : '';
+            if ($id === '') {
+                continue;
+            }
+
+            $list[] = [
+                'id' => $id,
+                'name' => sanitize_text_field((string) ($project['name'] ?? 'Projeto sem nome')),
+                'client' => sanitize_text_field((string) ($project['client'] ?? '')),
+                'updated_at' => sanitize_text_field((string) ($project['updated_at'] ?? '')),
+            ];
+        }
+        return $list;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array{html: string, notice: string}|null
+     */
+    private function get_cached_html_if_valid(array $payload): ?array
+    {
+        $cache_key = isset($_POST['preview_cache_key']) ? sanitize_key((string) $_POST['preview_cache_key']) : '';
+        if ($cache_key === '' || strpos($cache_key, self::PREVIEW_CACHE_PREFIX) !== 0) {
+            return null;
+        }
+
+        $cached = get_transient($cache_key);
+        if (! is_array($cached)) {
+            return null;
+        }
+
+        $cached_user_id = isset($cached['user_id']) ? (int) $cached['user_id'] : 0;
+        if ($cached_user_id !== get_current_user_id()) {
+            return null;
+        }
+
+        $cached_fingerprint = isset($cached['fingerprint']) ? (string) $cached['fingerprint'] : '';
+        $current_fingerprint = $this->payload_fingerprint($payload);
+        if ($cached_fingerprint === '' || ! hash_equals($cached_fingerprint, $current_fingerprint)) {
+            return null;
+        }
+
+        $html = isset($cached['html']) && is_string($cached['html']) ? $cached['html'] : '';
+        if ($html === '') {
+            return null;
+        }
+
+        $notice = isset($cached['notice']) && is_string($cached['notice']) ? $cached['notice'] : '';
+        return [
+            'html' => $html,
+            'notice' => $notice,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function save_preview_cache(array $payload, string $html, string $notice): string
+    {
+        $cache_key = $this->make_preview_cache_key();
+        $cache_data = [
+            'user_id' => get_current_user_id(),
+            'fingerprint' => $this->payload_fingerprint($payload),
+            'html' => $html,
+            'notice' => $notice,
+            'created_at' => time(),
+        ];
+        set_transient($cache_key, $cache_data, self::PREVIEW_CACHE_TTL);
+        return $cache_key;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function payload_fingerprint(array $payload): string
+    {
+        $base = [
+            'payload' => $payload,
+            'source_files' => $this->source_files_signature(),
+        ];
+        $json = wp_json_encode($base);
+        if (! is_string($json) || $json === '') {
+            $json = serialize($base);
+        }
+        return hash('sha256', $json);
+    }
+
+    /**
+     * @return array<int, array{name: string, type: string, size: int, error: int}>
+     */
+    private function source_files_signature(): array
+    {
+        $files = $_FILES['source_files'] ?? null;
+        if (! is_array($files)) {
+            return [];
+        }
+
+        $names = isset($files['name']) && is_array($files['name']) ? $files['name'] : [];
+        $types = isset($files['type']) && is_array($files['type']) ? $files['type'] : [];
+        $sizes = isset($files['size']) && is_array($files['size']) ? $files['size'] : [];
+        $errors = isset($files['error']) && is_array($files['error']) ? $files['error'] : [];
+
+        $signature = [];
+        foreach ($names as $index => $name) {
+            $error = isset($errors[$index]) ? (int) $errors[$index] : UPLOAD_ERR_NO_FILE;
+            if ($error === UPLOAD_ERR_NO_FILE) {
+                continue;
+            }
+
+            $signature[] = [
+                'name' => sanitize_file_name((string) $name),
+                'type' => sanitize_mime_type((string) ($types[$index] ?? '')),
+                'size' => isset($sizes[$index]) ? (int) $sizes[$index] : 0,
+                'error' => $error,
+            ];
+        }
+
+        return $signature;
+    }
+
+    private function make_preview_cache_key(): string
+    {
+        $random = strtolower(wp_generate_password(20, false, false));
+        return self::PREVIEW_CACHE_PREFIX . get_current_user_id() . '_' . $random;
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $recipes
+     */
+    private function recipes_to_raw(array $recipes): string
+    {
+        $blocks = [];
+
+        foreach ($recipes as $recipe) {
+            if (! is_array($recipe)) {
+                continue;
+            }
+            $title = trim((string) ($recipe['title'] ?? ''));
+            if ($title === '') {
+                continue;
+            }
+            $category = trim((string) ($recipe['category'] ?? ''));
+            $description = trim((string) ($recipe['description'] ?? ''));
+            $tempo = trim((string) ($recipe['tempo'] ?? ''));
+            $porcoes = trim((string) ($recipe['porcoes'] ?? ''));
+            $dificuldade = trim((string) ($recipe['dificuldade'] ?? ''));
+            $image = trim((string) ($recipe['image'] ?? ''));
+
+            $ingredients = [];
+            foreach ((array) ($recipe['ingredients'] ?? []) as $item) {
+                $line = trim((string) $item);
+                if ($line !== '') {
+                    $ingredients[] = '- ' . $line;
+                }
+            }
+
+            $steps = [];
+            $step_count = 1;
+            foreach ((array) ($recipe['steps'] ?? []) as $step) {
+                $line = trim((string) $step);
+                if ($line !== '') {
+                    $steps[] = $step_count . '. ' . $line;
+                    $step_count++;
+                }
+            }
+
+            $tip = trim((string) ($recipe['tip'] ?? ''));
+            $nutrition = is_array($recipe['nutrition'] ?? null) ? $recipe['nutrition'] : [];
+            $nutrition_kcal = trim((string) ($nutrition['kcal'] ?? $nutrition['calorias'] ?? ''));
+            $nutrition_carb = trim((string) ($nutrition['carb'] ?? $nutrition['carboidratos'] ?? ''));
+            $nutrition_prot = trim((string) ($nutrition['prot'] ?? $nutrition['proteinas'] ?? $nutrition['proteínas'] ?? ''));
+            $nutrition_fat = trim((string) ($nutrition['fat'] ?? $nutrition['gorduras'] ?? ''));
+            $nutrition_fiber = trim((string) ($nutrition['fiber'] ?? $nutrition['fibras'] ?? ''));
+
+            $block = [$title];
+            if ($category !== '') {
+                $block[] = 'Categoria: ' . $category;
+            }
+            if ($description !== '') {
+                $block[] = 'Descrição: ' . $description;
+            }
+            if ($tempo !== '') {
+                $block[] = 'Tempo: ' . $tempo;
+            }
+            if ($porcoes !== '') {
+                $block[] = 'Porções: ' . $porcoes;
+            }
+            if ($dificuldade !== '') {
+                $block[] = 'Dificuldade: ' . $dificuldade;
+            }
+            if ($image !== '') {
+                $block[] = 'Imagem: ' . $image;
+            }
+
+            $block[] = 'Ingredientes:';
+            if ($ingredients) {
+                $block = array_merge($block, $ingredients);
+            } else {
+                $block[] = '- Ingredientes conforme orientação nutricional.';
+            }
+
+            $block[] = 'Modo de preparo:';
+            if ($steps) {
+                $block = array_merge($block, $steps);
+            } else {
+                $block[] = '1. Organize os ingredientes.';
+                $block[] = '2. Faça o preparo conforme orientação.';
+            }
+
+            if ($tip !== '') {
+                $block[] = 'Dica:';
+                $block[] = $tip;
+            }
+
+            if ($nutrition_kcal !== '' || $nutrition_carb !== '' || $nutrition_prot !== '' || $nutrition_fat !== '' || $nutrition_fiber !== '') {
+                $block[] = 'Informação Nutricional:';
+                if ($nutrition_kcal !== '') {
+                    $block[] = 'Calorias: ' . $nutrition_kcal;
+                }
+                if ($nutrition_carb !== '') {
+                    $block[] = 'Carboidratos: ' . $nutrition_carb;
+                }
+                if ($nutrition_prot !== '') {
+                    $block[] = 'Proteínas: ' . $nutrition_prot;
+                }
+                if ($nutrition_fat !== '') {
+                    $block[] = 'Gorduras: ' . $nutrition_fat;
+                }
+                if ($nutrition_fiber !== '') {
+                    $block[] = 'Fibras: ' . $nutrition_fiber;
+                }
+            }
+
+            $blocks[] = implode("\n", $block);
+        }
+
+        return implode("\n\n---\n\n", $blocks);
     }
 
     private function download_html(string $html, string $filename): void

@@ -28,6 +28,7 @@ class PDFW_Renderer
             'drive_folder_url' => '',
             'cover_image' => '',
             'import_mode' => 'append',
+            'categories_raw' => self::sample_categories_raw(),
             'tips' => implode("\n", [
                 'Monte um planejamento semanal de refeições.',
                 'Prefira ingredientes frescos e minimamente processados.',
@@ -56,7 +57,7 @@ class PDFW_Renderer
             $recipes = self::parse_recipes(self::sample_recipes_raw());
         }
 
-        $categories = self::categorize_recipes($recipes);
+        $categories = self::categorize_recipes($recipes, (string) ($payload['categories_raw'] ?? ''));
 
         $title_raw = (string) ($payload['title'] ?? 'Ebook de Receitas');
         $subtitle_raw = (string) ($payload['subtitle'] ?? 'Receitas práticas');
@@ -123,7 +124,11 @@ class PDFW_Renderer
         $global_index = 1;
         foreach ($categories as $category_index => $category) {
             $roman = self::roman_numeral($category_index + 1);
-            $recipe_sections_html .= '<div class="category-divider">'
+            $category_media_html = self::category_divider_media_html((string) ($category['image'] ?? ''), (string) ($category['title'] ?? 'Categoria'));
+            $category_class = $category_media_html !== '' ? 'category-divider has-media' : 'category-divider';
+
+            $recipe_sections_html .= '<div class="' . $category_class . '">'
+                . $category_media_html
                 . '<div class="category-divider-num">' . self::h($roman) . '</div>'
                 . '<h2>' . self::h(mb_strtoupper((string) $category['title'], 'UTF-8')) . '</h2>'
                 . '<p class="category-divider-sub">' . self::h((string) $category['subtitle']) . '</p>'
@@ -150,7 +155,7 @@ class PDFW_Renderer
 
                 $meta = self::estimate_recipe_meta($recipe);
                 $nutri = self::estimate_nutrition($recipe);
-                $description = self::recipe_description($recipe_title_raw);
+                $description = self::recipe_description($recipe_title_raw, (string) ($recipe['description'] ?? ''));
                 $media_html = self::recipe_media_html($recipe, $theme, $global_index, $recipe_title_raw);
 
                 $recipe_sections_html .= '<div class="recipe-title-page">'
@@ -270,11 +275,14 @@ html,body { font-family:'Noto Sans','Calibri',sans-serif; font-size:10.5pt; line
 .quick-card ul{list-style:none;padding:0;}
 .quick-card li{font-size:9.7pt;line-height:1.55;padding-left:3mm;position:relative;margin-bottom:1.4mm;}
 .quick-card li::before{content:"•";color:var(--accent);position:absolute;left:0;}
-.category-divider{page:category-divider;page-break-before:always;width:148mm;height:210mm;background:var(--cover-bg);color:#fff;position:relative;display:flex;align-items:center;justify-content:center;flex-direction:column;text-align:center;}
-.category-divider::before{content:"";position:absolute;top:0;left:0;right:0;bottom:0;background:repeating-linear-gradient(-45deg,transparent,transparent 24mm,rgba(255,255,255,.08) 24mm,rgba(255,255,255,.08) 24.7mm);}
-.category-divider-num{font-family:'Georgia','Noto Serif',serif;font-size:54pt;color:rgba(255,248,240,.20);z-index:1;}
-.category-divider h2{z-index:1;font-family:'Georgia','Noto Serif',serif;font-size:18pt;letter-spacing:2.2pt;text-transform:uppercase;line-height:1.28;padding:0 8mm;}
-.category-divider-sub{z-index:1;color:var(--divider-sub);margin-top:4mm;font-size:10pt;font-style:italic;}
+.category-divider{page:category-divider;page-break-before:always;width:148mm;height:210mm;background:var(--cover-bg);color:#fff;position:relative;display:flex;align-items:center;justify-content:center;flex-direction:column;text-align:center;overflow:hidden;}
+.category-divider::before{content:"";position:absolute;top:0;left:0;right:0;bottom:0;background:linear-gradient(rgba(14,32,31,.50),rgba(14,32,31,.50));z-index:1;}
+.category-divider:not(.has-media)::after{content:"";position:absolute;top:0;left:0;right:0;bottom:0;background:repeating-linear-gradient(-45deg,transparent,transparent 24mm,rgba(255,255,255,.08) 24mm,rgba(255,255,255,.08) 24.7mm);z-index:1;}
+.category-divider-media{position:absolute;top:0;left:0;right:0;bottom:0;z-index:0;}
+.category-divider-media img{width:100%;height:100%;object-fit:cover;display:block;}
+.category-divider-num{font-family:'Georgia','Noto Serif',serif;font-size:54pt;color:rgba(255,248,240,.20);z-index:2;}
+.category-divider h2{z-index:2;font-family:'Georgia','Noto Serif',serif;font-size:18pt;letter-spacing:2.2pt;text-transform:uppercase;line-height:1.28;padding:0 8mm;}
+.category-divider-sub{z-index:2;color:var(--divider-sub);margin-top:4mm;font-size:10pt;font-style:italic;}
 .recipe-title-page{page-break-before:always;position:relative;}
 .recipe-image-container{width:calc(100% + 24mm);height:106mm;margin:-15mm -12mm 0 -12mm;overflow:hidden;position:relative;}
 .recipe-image-container img{width:100%;height:100%;object-fit:cover;display:block;}
@@ -398,7 +406,7 @@ HTML;
 
             $normalized = mb_strtolower($title, 'UTF-8');
             $key = sanitize_title(remove_accents($normalized));
-            $score = count((array) ($recipe['ingredients'] ?? [])) + count((array) ($recipe['steps'] ?? []));
+            $score = self::recipe_total_score($recipe);
 
             if (! isset($seen[$key])) {
                 $seen[$key] = ['idx' => count($out), 'score' => $score];
@@ -406,11 +414,21 @@ HTML;
                 continue;
             }
 
-            if ($score > (int) $seen[$key]['score']) {
-                $idx = (int) $seen[$key]['idx'];
-                $out[$idx] = $recipe;
-                $seen[$key]['score'] = $score;
+            $idx = (int) $seen[$key]['idx'];
+            $current = is_array($out[$idx] ?? null) ? $out[$idx] : [];
+            $current_score = (int) ($seen[$key]['score'] ?? 0);
+
+            if ($score > $current_score) {
+                $primary = $recipe;
+                $secondary = $current;
+            } else {
+                $primary = $current;
+                $secondary = $recipe;
             }
+
+            $merged = self::merge_recipe_pair($primary, $secondary);
+            $out[$idx] = $merged;
+            $seen[$key]['score'] = self::recipe_total_score($merged);
         }
 
         return array_values($out);
@@ -508,6 +526,20 @@ HTML;
         return '';
     }
 
+    private static function sample_categories_raw(): string
+    {
+        $categories = [
+            ['name' => 'Sopas & Caldos', 'subtitle' => 'Receitas quentes para refeições equilibradas.', 'image' => ''],
+            ['name' => 'Saladas & Molhos', 'subtitle' => 'Combinações leves e cheias de sabor.', 'image' => ''],
+            ['name' => 'Peixes & Frutos do Mar', 'subtitle' => 'Opções com proteína magra e preparo simples.', 'image' => ''],
+            ['name' => 'Carnes & Assados', 'subtitle' => 'Pratos principais para o dia a dia.', 'image' => ''],
+            ['name' => 'Massas & Grãos', 'subtitle' => 'Energia e saciedade com bons ingredientes.', 'image' => ''],
+        ];
+
+        $json = wp_json_encode($categories, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+        return is_string($json) ? $json : '';
+    }
+
     private static function sample_recipes_raw(): string
     {
         return implode("\n", [
@@ -563,23 +595,92 @@ HTML;
             $ingredients = [];
             $steps = [];
             $tip = '';
+            $category = '';
+            $description = '';
+            $tempo = '';
+            $porcoes = '';
+            $dificuldade = '';
+            $image = '';
+            $nutrition = [
+                'kcal' => '',
+                'carb' => '',
+                'prot' => '',
+                'fat' => '',
+                'fiber' => '',
+            ];
 
             foreach ($lines as $line) {
                 $low = mb_strtolower($line);
-                if (strpos($low, 'ingredientes') !== false) {
+                if (preg_match('/^categoria\s*:?\s*(.+)$/iu', $line, $match) === 1) {
+                    $candidate = trim((string) ($match[1] ?? ''));
+                    if ($candidate !== '') {
+                        $category = $candidate;
+                    }
+                    continue;
+                }
+                if (preg_match('/^descri(?:c|ç)(?:a|ã)o\s*:?\s*(.+)$/iu', $line, $match) === 1) {
+                    $description = trim((string) ($match[1] ?? ''));
+                    continue;
+                }
+                if (preg_match('/^tempo\s*:?\s*(.+)$/iu', $line, $match) === 1) {
+                    $tempo = trim((string) ($match[1] ?? ''));
+                    continue;
+                }
+                if (preg_match('/^por(?:c|ç)(?:o|õ)es?\s*:?\s*(.+)$/iu', $line, $match) === 1) {
+                    $porcoes = trim((string) ($match[1] ?? ''));
+                    continue;
+                }
+                if (preg_match('/^dificuldade\s*:?\s*(.+)$/iu', $line, $match) === 1) {
+                    $dificuldade = trim((string) ($match[1] ?? ''));
+                    continue;
+                }
+                if (preg_match('/^imagem(?:\s+da\s+receita)?\s*:?\s*(.+)$/iu', $line, $match) === 1) {
+                    $image = trim((string) ($match[1] ?? ''));
+                    continue;
+                }
+                if (preg_match('/^ingredientes?(?:\\s*[:\\-].*)?$/iu', $line) === 1) {
                     $section = 'ingredients';
                     continue;
                 }
-                if (strpos($low, 'modo de preparo') !== false || strpos($low, 'preparo') !== false) {
+                if (preg_match('/^(modo\\s+de\\s+preparo|modo\\s+de\\s+fazer|preparo)(?:\\s*[:\\-].*)?$/iu', $line) === 1) {
                     $section = 'steps';
                     continue;
                 }
-                if (strpos($low, 'dica') === 0) {
+                if (preg_match('/^informa(?:c|ç)(?:a|ã)o\\s+nutricional(?:\\s*[:\\-].*)?$/iu', $line) === 1) {
+                    $section = 'nutrition';
+                    continue;
+                }
+                if (preg_match('/^dica(?:\\s+do\\s+chef)?\\s*:?\\s*(.*)$/iu', $line, $match) === 1) {
                     $section = 'tip';
-                    $tip_text = trim(preg_replace('/^dica\s*:?\s*/iu', '', $line) ?? '');
+                    $tip_text = trim((string) ($match[1] ?? ''));
                     if ($tip_text !== '') {
-                        $tip = $tip_text;
+                        $tip = trim($tip . ' ' . $tip_text);
                     }
+                    continue;
+                }
+                if (preg_match('/^calorias?\\s*:?\s*(.+)$/iu', $line, $match) === 1) {
+                    $nutrition['kcal'] = trim((string) ($match[1] ?? ''));
+                    $section = 'nutrition';
+                    continue;
+                }
+                if (preg_match('/^carboidratos?\\s*:?\s*(.+)$/iu', $line, $match) === 1) {
+                    $nutrition['carb'] = trim((string) ($match[1] ?? ''));
+                    $section = 'nutrition';
+                    continue;
+                }
+                if (preg_match('/^prote(?:i|í)nas?\\s*:?\s*(.+)$/iu', $line, $match) === 1) {
+                    $nutrition['prot'] = trim((string) ($match[1] ?? ''));
+                    $section = 'nutrition';
+                    continue;
+                }
+                if (preg_match('/^gorduras?\\s*:?\s*(.+)$/iu', $line, $match) === 1) {
+                    $nutrition['fat'] = trim((string) ($match[1] ?? ''));
+                    $section = 'nutrition';
+                    continue;
+                }
+                if (preg_match('/^fibras?\\s*:?\s*(.+)$/iu', $line, $match) === 1) {
+                    $nutrition['fiber'] = trim((string) ($match[1] ?? ''));
+                    $section = 'nutrition';
                     continue;
                 }
 
@@ -601,13 +702,22 @@ HTML;
             }
             if (! $steps) {
                 $steps = ['Organize os ingredientes.', 'Prepare em fogo baixo.', 'Ajuste temperos e sirva.'];
+            } else {
+                $steps = self::expand_step_lines($steps);
             }
 
             $recipes[] = [
                 'title' => $title,
+                'category' => $category,
+                'description' => $description,
+                'tempo' => $tempo,
+                'porcoes' => $porcoes,
+                'dificuldade' => $dificuldade,
+                'image' => $image,
                 'ingredients' => $ingredients,
                 'steps' => $steps,
                 'tip' => $tip,
+                'nutrition' => self::normalize_nutrition($nutrition),
             ];
         }
 
@@ -615,10 +725,149 @@ HTML;
     }
 
     /**
+     * @param array<int, string> $steps
+     * @return array<int, string>
+     */
+    private static function expand_step_lines(array $steps): array
+    {
+        $expanded = [];
+        foreach ($steps as $step) {
+            $line = trim((string) $step);
+            if ($line === '') {
+                continue;
+            }
+
+            if (mb_strlen($line) > 120 && (strpos($line, '.') !== false || strpos($line, ';') !== false)) {
+                $parts = preg_split('/(?<=[\\.!?;])\\s+/u', $line) ?: [];
+                foreach ($parts as $part) {
+                    $piece = trim((string) $part);
+                    $piece = preg_replace('/^\\d+[\\).:-]?\\s*/u', '', (string) $piece);
+                    $piece = trim((string) $piece, " \t\n\r\0\x0B.;:");
+                    if ($piece !== '') {
+                        $expanded[] = $piece;
+                    }
+                }
+                continue;
+            }
+
+            $line = preg_replace('/^\\d+[\\).:-]?\\s*/u', '', $line);
+            $line = trim((string) $line, " \t\n\r\0\x0B.;:");
+            if ($line !== '') {
+                $expanded[] = $line;
+            }
+        }
+
+        return $expanded ?: $steps;
+    }
+
+    /**
      * @param array<int, array<string, mixed>> $recipes
      * @return array<int, array<string, mixed>>
      */
-    private static function categorize_recipes(array $recipes): array
+    private static function categorize_recipes(array $recipes, string $categories_raw = ''): array
+    {
+        $category_defs = self::parse_categories_raw($categories_raw);
+
+        $configured_order = [];
+        $configured_map = [];
+        foreach ($category_defs as $definition) {
+            $key = self::category_key((string) ($definition['title'] ?? ''));
+            if ($key === '' || isset($configured_map[$key])) {
+                continue;
+            }
+
+            $configured_order[] = $key;
+            $configured_map[$key] = [
+                'id' => (string) ($definition['id'] ?? $key),
+                'title' => (string) ($definition['title'] ?? 'Categoria'),
+                'subtitle' => (string) ($definition['subtitle'] ?? ''),
+                'image' => (string) ($definition['image'] ?? ''),
+                'recipes' => [],
+            ];
+        }
+
+        $dynamic_groups = [];
+        $dynamic_order = [];
+        $uncategorized = [];
+
+        foreach ($recipes as $recipe) {
+            $category_title = trim((string) ($recipe['category'] ?? ''));
+            if ($category_title === '') {
+                $uncategorized[] = $recipe;
+                continue;
+            }
+
+            $key = self::category_key($category_title);
+            if ($key === '') {
+                $uncategorized[] = $recipe;
+                continue;
+            }
+
+            if (isset($configured_map[$key])) {
+                $configured_map[$key]['recipes'][] = $recipe;
+                continue;
+            }
+
+            if (! isset($dynamic_groups[$key])) {
+                $dynamic_groups[$key] = [
+                    'id' => $key,
+                    'title' => $category_title,
+                    'subtitle' => '',
+                    'image' => '',
+                    'recipes' => [],
+                ];
+                $dynamic_order[] = $key;
+            }
+            $dynamic_groups[$key]['recipes'][] = $recipe;
+        }
+
+        $categories = [];
+
+        foreach ($configured_order as $key) {
+            $group = $configured_map[$key];
+            $group_recipes = is_array($group['recipes']) ? $group['recipes'] : [];
+            $count = count($group_recipes);
+            $custom_subtitle = trim((string) ($group['subtitle'] ?? ''));
+
+            $categories[] = self::build_category(
+                (string) ($group['id'] ?? $key),
+                (string) ($group['title'] ?? 'Categoria'),
+                $group_recipes,
+                self::format_category_subtitle($custom_subtitle, $count),
+                (string) ($group['image'] ?? '')
+            );
+        }
+
+        foreach ($dynamic_order as $key) {
+            $group = $dynamic_groups[$key];
+            $group_recipes = is_array($group['recipes']) ? $group['recipes'] : [];
+            $count = count($group_recipes);
+
+            $categories[] = self::build_category(
+                (string) ($group['id'] ?? $key),
+                (string) ($group['title'] ?? 'Categoria'),
+                $group_recipes,
+                self::format_category_subtitle('', $count),
+                (string) ($group['image'] ?? '')
+            );
+        }
+
+        if ($uncategorized) {
+            $categories = array_merge($categories, self::categorize_recipes_auto($uncategorized));
+        }
+
+        if ($categories) {
+            return $categories;
+        }
+
+        return self::categorize_recipes_auto($recipes);
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $recipes
+     * @return array<int, array<string, mixed>>
+     */
+    private static function categorize_recipes_auto(array $recipes): array
     {
         $biomassa = [];
         $ovos = [];
@@ -692,14 +941,161 @@ HTML;
      * @param array<int, array<string, mixed>> $recipes
      * @return array<string, mixed>
      */
-    private static function build_category(string $id, string $title, array $recipes, string $subtitle): array
+    private static function build_category(string $id, string $title, array $recipes, string $subtitle, string $image = ''): array
     {
         return [
             'id' => $id,
             'title' => $title,
             'subtitle' => $subtitle,
+            'image' => $image,
+            'recipe_count' => count($recipes),
             'recipes' => array_values($recipes),
         ];
+    }
+
+    /**
+     * @return array<int, array{id: string, title: string, subtitle: string, image: string}>
+     */
+    private static function parse_categories_raw(string $raw): array
+    {
+        $raw = trim(str_replace("\r\n", "\n", $raw));
+        if ($raw === '') {
+            return [];
+        }
+
+        $from_json = self::parse_categories_raw_json($raw);
+        if ($from_json) {
+            return $from_json;
+        }
+
+        return self::parse_categories_raw_lines($raw);
+    }
+
+    /**
+     * @return array<int, array{id: string, title: string, subtitle: string, image: string}>
+     */
+    private static function parse_categories_raw_json(string $raw): array
+    {
+        $decoded = json_decode($raw, true);
+        if (! is_array($decoded)) {
+            return [];
+        }
+
+        $seen = [];
+        $categories = [];
+
+        foreach ($decoded as $item) {
+            if (! is_array($item)) {
+                continue;
+            }
+
+            $title = trim((string) ($item['name'] ?? $item['title'] ?? ''));
+            if ($title === '') {
+                continue;
+            }
+
+            $key = self::category_key($title);
+            if ($key === '' || isset($seen[$key])) {
+                continue;
+            }
+
+            $seen[$key] = true;
+            $subtitle = trim((string) ($item['subtitle'] ?? ''));
+            $image = trim((string) ($item['image'] ?? ''));
+            if (! self::is_valid_image_src($image)) {
+                $image = '';
+            }
+
+            $categories[] = [
+                'id' => $key,
+                'title' => $title,
+                'subtitle' => $subtitle,
+                'image' => $image,
+            ];
+        }
+
+        return $categories;
+    }
+
+    /**
+     * @return array<int, array{id: string, title: string, subtitle: string, image: string}>
+     */
+    private static function parse_categories_raw_lines(string $raw): array
+    {
+        $blocks = preg_split('/^\s*---+\s*$/m', $raw) ?: [];
+        $categories = [];
+        $seen = [];
+
+        foreach ($blocks as $block) {
+            $lines = array_values(array_filter(array_map('trim', explode("\n", trim($block))), static function ($line) {
+                return $line !== '';
+            }));
+            if (! $lines) {
+                continue;
+            }
+
+            $title = '';
+            $subtitle = '';
+            $image = '';
+
+            foreach ($lines as $idx => $line) {
+                if ($idx === 0) {
+                    $title = trim((string) preg_replace('/^(categoria\s*:?\s*)/iu', '', $line));
+                    continue;
+                }
+
+                if (preg_match('/^(subt[ií]tulo|descri(?:c|ç)(?:a|ã)o)\s*:?\s*(.+)$/iu', $line, $match) === 1) {
+                    $subtitle = trim((string) ($match[2] ?? ''));
+                    continue;
+                }
+
+                if (preg_match('/^imagem\s*:?\s*(.+)$/iu', $line, $match) === 1) {
+                    $image = trim((string) ($match[1] ?? ''));
+                    continue;
+                }
+            }
+
+            if ($title === '') {
+                continue;
+            }
+
+            $key = self::category_key($title);
+            if ($key === '' || isset($seen[$key])) {
+                continue;
+            }
+            $seen[$key] = true;
+
+            if (! self::is_valid_image_src($image)) {
+                $image = '';
+            }
+
+            $categories[] = [
+                'id' => $key,
+                'title' => $title,
+                'subtitle' => $subtitle,
+                'image' => $image,
+            ];
+        }
+
+        return $categories;
+    }
+
+    private static function category_key(string $name): string
+    {
+        $name = trim($name);
+        if ($name === '') {
+            return '';
+        }
+        return sanitize_title(remove_accents(mb_strtolower($name, 'UTF-8')));
+    }
+
+    private static function format_category_subtitle(string $custom_subtitle, int $count): string
+    {
+        $count_label = sprintf('%d %s nesta categoria', $count, $count === 1 ? 'receita' : 'receitas');
+        if ($custom_subtitle === '') {
+            return $count_label;
+        }
+        return $custom_subtitle . ' • ' . $count_label;
     }
 
     /**
@@ -708,6 +1104,10 @@ HTML;
      */
     private static function estimate_recipe_meta(array $recipe): array
     {
+        $tempo_custom = trim((string) ($recipe['tempo'] ?? ''));
+        $porcoes_custom = trim((string) ($recipe['porcoes'] ?? ''));
+        $nivel_custom = trim((string) ($recipe['dificuldade'] ?? ''));
+
         $steps_count = count((array) ($recipe['steps'] ?? []));
         $ingredients_count = count((array) ($recipe['ingredients'] ?? []));
 
@@ -736,9 +1136,9 @@ HTML;
         }
 
         return [
-            'tempo' => $tempo,
-            'porcoes' => $porcoes,
-            'nivel' => $nivel,
+            'tempo' => $tempo_custom !== '' ? $tempo_custom : $tempo,
+            'porcoes' => $porcoes_custom !== '' ? $porcoes_custom : $porcoes,
+            'nivel' => $nivel_custom !== '' ? $nivel_custom : $nivel,
         ];
     }
 
@@ -748,6 +1148,7 @@ HTML;
      */
     private static function estimate_nutrition(array $recipe): array
     {
+        $custom_nutrition = self::normalize_nutrition((array) ($recipe['nutrition'] ?? []));
         $ingredients_count = max(1, count((array) ($recipe['ingredients'] ?? [])));
         $steps_count = max(1, count((array) ($recipe['steps'] ?? [])));
 
@@ -757,23 +1158,156 @@ HTML;
         $fat = 4 + (int) round($ingredients_count * 0.9);
         $fiber = 2 + (int) round($ingredients_count * 0.5);
 
-        return [
+        $estimated = [
             'kcal' => (string) max(120, min(420, $kcal)),
             'carb' => (string) max(8, min(55, $carb)) . 'g',
             'prot' => (string) max(6, min(30, $prot)) . 'g',
             'fat' => (string) max(4, min(24, $fat)) . 'g',
             'fiber' => (string) max(2, min(14, $fiber)) . 'g',
         ];
+
+        if (! self::nutrition_has_values($custom_nutrition)) {
+            return $estimated;
+        }
+
+        return [
+            'kcal' => $custom_nutrition['kcal'] !== '' ? $custom_nutrition['kcal'] : $estimated['kcal'],
+            'carb' => $custom_nutrition['carb'] !== '' ? $custom_nutrition['carb'] : $estimated['carb'],
+            'prot' => $custom_nutrition['prot'] !== '' ? $custom_nutrition['prot'] : $estimated['prot'],
+            'fat' => $custom_nutrition['fat'] !== '' ? $custom_nutrition['fat'] : $estimated['fat'],
+            'fiber' => $custom_nutrition['fiber'] !== '' ? $custom_nutrition['fiber'] : $estimated['fiber'],
+        ];
     }
 
-    private static function recipe_description(string $title): string
+    private static function recipe_description(string $title, string $custom_description = ''): string
     {
+        $custom_description = trim($custom_description);
+        if ($custom_description !== '') {
+            return $custom_description;
+        }
+
         $title_lc = mb_strtolower($title, 'UTF-8');
         if (strpos(self::normalize_for_match($title), 'biomassa') !== false) {
             return 'Receita com biomassa de banana verde, com foco em praticidade, saciedade e equilíbrio metabólico para o dia a dia.';
         }
 
         return 'Receita prática de ' . $title_lc . ', organizada para facilitar o preparo no dia a dia.';
+    }
+
+    /**
+     * @param array<string, mixed> $recipe
+     */
+    private static function recipe_core_score(array $recipe): int
+    {
+        return count((array) ($recipe['ingredients'] ?? [])) + count((array) ($recipe['steps'] ?? []));
+    }
+
+    /**
+     * @param array<string, mixed> $recipe
+     */
+    private static function recipe_metadata_score(array $recipe): int
+    {
+        $score = 0;
+        foreach (['category', 'description', 'tempo', 'porcoes', 'dificuldade', 'image', 'tip'] as $field) {
+            if (trim((string) ($recipe[$field] ?? '')) !== '') {
+                $score += 1;
+            }
+        }
+
+        $nutrition = self::normalize_nutrition((array) ($recipe['nutrition'] ?? []));
+        foreach ($nutrition as $value) {
+            if ($value !== '') {
+                $score += 1;
+            }
+        }
+
+        return $score;
+    }
+
+    /**
+     * @param array<string, mixed> $recipe
+     */
+    private static function recipe_total_score(array $recipe): int
+    {
+        return (self::recipe_core_score($recipe) * 100) + self::recipe_metadata_score($recipe);
+    }
+
+    /**
+     * @param array<string, mixed> $primary
+     * @param array<string, mixed> $secondary
+     * @return array<string, mixed>
+     */
+    private static function merge_recipe_pair(array $primary, array $secondary): array
+    {
+        $merged = $primary;
+
+        if (trim((string) ($merged['title'] ?? '')) === '' && trim((string) ($secondary['title'] ?? '')) !== '') {
+            $merged['title'] = (string) $secondary['title'];
+        }
+
+        foreach (['category', 'description', 'tempo', 'porcoes', 'dificuldade', 'image', 'tip'] as $field) {
+            $main_value = trim((string) ($merged[$field] ?? ''));
+            $alt_value = trim((string) ($secondary[$field] ?? ''));
+            if ($main_value === '' && $alt_value !== '') {
+                $merged[$field] = $alt_value;
+            }
+        }
+
+        $main_ingredients = array_values(array_filter(array_map('trim', (array) ($merged['ingredients'] ?? []))));
+        $alt_ingredients = array_values(array_filter(array_map('trim', (array) ($secondary['ingredients'] ?? []))));
+        if (! $main_ingredients && $alt_ingredients) {
+            $merged['ingredients'] = $alt_ingredients;
+        } else {
+            $merged['ingredients'] = $main_ingredients;
+        }
+
+        $main_steps = array_values(array_filter(array_map('trim', (array) ($merged['steps'] ?? []))));
+        $alt_steps = array_values(array_filter(array_map('trim', (array) ($secondary['steps'] ?? []))));
+        if (! $main_steps && $alt_steps) {
+            $merged['steps'] = $alt_steps;
+        } else {
+            $merged['steps'] = $main_steps;
+        }
+
+        $main_nutrition = self::normalize_nutrition((array) ($merged['nutrition'] ?? []));
+        $alt_nutrition = self::normalize_nutrition((array) ($secondary['nutrition'] ?? []));
+        $merged['nutrition'] = [
+            'kcal' => $main_nutrition['kcal'] !== '' ? $main_nutrition['kcal'] : $alt_nutrition['kcal'],
+            'carb' => $main_nutrition['carb'] !== '' ? $main_nutrition['carb'] : $alt_nutrition['carb'],
+            'prot' => $main_nutrition['prot'] !== '' ? $main_nutrition['prot'] : $alt_nutrition['prot'],
+            'fat' => $main_nutrition['fat'] !== '' ? $main_nutrition['fat'] : $alt_nutrition['fat'],
+            'fiber' => $main_nutrition['fiber'] !== '' ? $main_nutrition['fiber'] : $alt_nutrition['fiber'],
+        ];
+
+        return $merged;
+    }
+
+    /**
+     * @param array<string, mixed> $input
+     * @return array{kcal: string, carb: string, prot: string, fat: string, fiber: string}
+     */
+    private static function normalize_nutrition(array $input): array
+    {
+        return [
+            'kcal' => trim((string) ($input['kcal'] ?? $input['calorias'] ?? '')),
+            'carb' => trim((string) ($input['carb'] ?? $input['carboidratos'] ?? '')),
+            'prot' => trim((string) ($input['prot'] ?? $input['proteinas'] ?? $input['proteínas'] ?? '')),
+            'fat' => trim((string) ($input['fat'] ?? $input['gorduras'] ?? '')),
+            'fiber' => trim((string) ($input['fiber'] ?? $input['fibras'] ?? '')),
+        ];
+    }
+
+    /**
+     * @param array{kcal: string, carb: string, prot: string, fat: string, fiber: string} $nutrition
+     */
+    private static function nutrition_has_values(array $nutrition): bool
+    {
+        foreach ($nutrition as $value) {
+            if (trim((string) $value) !== '') {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -797,6 +1331,16 @@ HTML;
             return '';
         }
         return '<div class="cover-media"><img src="' . self::h($image_src) . '" alt="' . self::h($title) . '"></div>';
+    }
+
+    private static function category_divider_media_html(string $image_src, string $title): string
+    {
+        $image_src = trim($image_src);
+        if (! self::is_valid_image_src($image_src)) {
+            return '';
+        }
+
+        return '<div class="category-divider-media"><img src="' . self::h($image_src) . '" alt="' . self::h($title) . '"></div>';
     }
 
     private static function is_valid_image_src(string $src): bool

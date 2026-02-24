@@ -47,7 +47,8 @@ class PDFW_Ingestor
      *   logs: array<int, string>,
      *   imported_files: int,
      *   image_entries: array<int, array<string, mixed>>,
-     *   cover_image: string
+     *   cover_image: string,
+     *   audit_items: array<int, array<string, mixed>>
      * }
      */
     public static function ingest(array $uploaded_files, string $drive_folder_url = ''): array
@@ -57,6 +58,7 @@ class PDFW_Ingestor
         $imported_files = 0;
         $image_entries = [];
         $cover_image = '';
+        $audit_items = [];
 
         $local_files = self::normalize_uploaded_files($uploaded_files);
         if ($local_files) {
@@ -69,6 +71,11 @@ class PDFW_Ingestor
                 }
 
                 $parsed = self::parse_file_from_path($tmp, $name, $logs);
+                if (is_array($parsed['audit'] ?? null)) {
+                    $audit = $parsed['audit'];
+                    $audit['source'] = 'upload';
+                    $audit_items[] = $audit;
+                }
                 if (! empty($parsed['recipes'])) {
                     $imported_files++;
                     $recipes = array_merge($recipes, $parsed['recipes']);
@@ -89,6 +96,7 @@ class PDFW_Ingestor
             $imported_files += (int) $drive_result['imported_files'];
             $recipes = array_merge($recipes, $drive_result['recipes']);
             $image_entries = array_merge($image_entries, $drive_result['image_entries']);
+            $audit_items = array_merge($audit_items, is_array($drive_result['audit_items'] ?? null) ? $drive_result['audit_items'] : []);
             if ($cover_image === '' && (string) ($drive_result['cover_image'] ?? '') !== '') {
                 $cover_image = (string) $drive_result['cover_image'];
             }
@@ -102,6 +110,7 @@ class PDFW_Ingestor
             'imported_files' => $imported_files,
             'image_entries' => $image_entries,
             'cover_image' => $cover_image,
+            'audit_items' => $audit_items,
         ];
     }
 
@@ -140,7 +149,8 @@ class PDFW_Ingestor
      * @param array<int, string> $logs
      * @return array{
      *   recipes: array<int, array<string, mixed>>,
-     *   image_entry: array<string, mixed>|null
+     *   image_entry: array<string, mixed>|null,
+     *   audit: array<string, mixed>
      * }
      */
     private static function parse_file_from_path(string $path, string $name, array &$logs): array
@@ -148,7 +158,16 @@ class PDFW_Ingestor
         $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
         if ($ext === '' || (! isset(self::$supported_text_ext_map[$ext]) && ! isset(self::$supported_image_ext_map[$ext]))) {
             $logs[] = "Formato não suportado: {$name}";
-            return ['recipes' => [], 'image_entry' => null];
+            return [
+                'recipes' => [],
+                'image_entry' => null,
+                'audit' => [
+                    'name' => $name,
+                    'kind' => 'skip',
+                    'recipes_count' => 0,
+                    'note' => 'Formato não suportado',
+                ],
+            ];
         }
 
         if (isset(self::$supported_image_ext_map[$ext])) {
@@ -156,35 +175,83 @@ class PDFW_Ingestor
             return [
                 'recipes' => [],
                 'image_entry' => $image_entry,
+                'audit' => [
+                    'name' => $name,
+                    'kind' => $image_entry ? 'image' : 'error',
+                    'recipes_count' => 0,
+                    'note' => $image_entry ? 'Imagem importada' : 'Falha ao processar imagem',
+                ],
             ];
         }
 
         if (self::should_skip_by_name($name)) {
             $logs[] = "Arquivo não-receita ignorado: {$name}";
-            return ['recipes' => [], 'image_entry' => null];
+            return [
+                'recipes' => [],
+                'image_entry' => null,
+                'audit' => [
+                    'name' => $name,
+                    'kind' => 'skip',
+                    'recipes_count' => 0,
+                    'note' => 'Arquivo não-receita ignorado',
+                ],
+            ];
         }
 
         $size = @filesize($path);
         if (is_int($size) && $size > self::MAX_FILE_BYTES) {
             $logs[] = "Arquivo muito grande ignorado ({$name})";
-            return ['recipes' => [], 'image_entry' => null];
+            return [
+                'recipes' => [],
+                'image_entry' => null,
+                'audit' => [
+                    'name' => $name,
+                    'kind' => 'skip',
+                    'recipes_count' => 0,
+                    'note' => 'Arquivo muito grande',
+                ],
+            ];
         }
 
         $text = self::extract_text_from_path($path, $ext, $logs);
         if (trim($text) === '') {
             $logs[] = "Não foi possível extrair texto: {$name}";
-            return ['recipes' => [], 'image_entry' => null];
+            return [
+                'recipes' => [],
+                'image_entry' => null,
+                'audit' => [
+                    'name' => $name,
+                    'kind' => 'error',
+                    'recipes_count' => 0,
+                    'note' => 'Não foi possível extrair texto',
+                ],
+            ];
         }
 
         $recipes = self::extract_recipes_from_text($text, pathinfo($name, PATHINFO_FILENAME));
         if (! $recipes) {
             $logs[] = "Sem receita detectada em: {$name}";
-            return ['recipes' => [], 'image_entry' => null];
+            return [
+                'recipes' => [],
+                'image_entry' => null,
+                'audit' => [
+                    'name' => $name,
+                    'kind' => 'skip',
+                    'recipes_count' => 0,
+                    'note' => 'Sem receita detectada',
+                ],
+            ];
         }
 
         return [
             'recipes' => $recipes,
             'image_entry' => null,
+            'audit' => [
+                'name' => $name,
+                'kind' => 'recipe',
+                'recipes_count' => count($recipes),
+                'note' => count($recipes) === 1 ? '1 receita importada' : (count($recipes) . ' receitas importadas'),
+            ],
         ];
     }
 
@@ -194,7 +261,8 @@ class PDFW_Ingestor
      *   logs: array<int, string>,
      *   imported_files: int,
      *   image_entries: array<int, array<string, mixed>>,
-     *   cover_image: string
+     *   cover_image: string,
+     *   audit_items: array<int, array<string, mixed>>
      * }
      */
     private static function ingest_from_drive_folder(string $folder_url): array
@@ -204,6 +272,7 @@ class PDFW_Ingestor
         $imported_files = 0;
         $image_entries = [];
         $cover_image = '';
+        $audit_items = [];
 
         $folder_id = self::extract_drive_folder_id($folder_url);
         if ($folder_id === '') {
@@ -213,6 +282,7 @@ class PDFW_Ingestor
                 'imported_files' => 0,
                 'image_entries' => [],
                 'cover_image' => '',
+                'audit_items' => [],
             ];
         }
 
@@ -228,6 +298,7 @@ class PDFW_Ingestor
                 'imported_files' => 0,
                 'image_entries' => [],
                 'cover_image' => '',
+                'audit_items' => [],
             ];
         }
 
@@ -238,8 +309,16 @@ class PDFW_Ingestor
                 break;
             }
 
+            $item_name = trim((string) ($item['name'] ?? 'arquivo-drive'));
             $download = self::download_drive_item($item, $logs);
             if (! $download) {
+                $audit_items[] = [
+                    'source' => 'drive',
+                    'name' => $item_name,
+                    'kind' => 'error',
+                    'recipes_count' => 0,
+                    'note' => 'Falha no download ou arquivo indisponível',
+                ];
                 continue;
             }
 
@@ -256,8 +335,35 @@ class PDFW_Ingestor
                         $cover_image = (string) $image_entry['src'];
                     }
                     $imported_files++;
+                    $audit_items[] = [
+                        'source' => 'drive',
+                        'name' => $download['name'],
+                        'kind' => 'image',
+                        'recipes_count' => 0,
+                        'note' => 'Imagem importada',
+                    ];
+                } else {
+                    $audit_items[] = [
+                        'source' => 'drive',
+                        'name' => $download['name'],
+                        'kind' => 'error',
+                        'recipes_count' => 0,
+                        'note' => 'Falha ao processar imagem',
+                    ];
                 }
             } else {
+                if (self::should_skip_by_name($download['name'])) {
+                    $audit_items[] = [
+                        'source' => 'drive',
+                        'name' => $download['name'],
+                        'kind' => 'skip',
+                        'recipes_count' => 0,
+                        'note' => 'Arquivo não-receita ignorado',
+                    ];
+                    $count++;
+                    continue;
+                }
+
                 $recipes_from_file = self::parse_file_blob(
                     $download['name'],
                     $download['ext'],
@@ -267,6 +373,21 @@ class PDFW_Ingestor
                 if ($recipes_from_file) {
                     $recipes = array_merge($recipes, $recipes_from_file);
                     $imported_files++;
+                    $audit_items[] = [
+                        'source' => 'drive',
+                        'name' => $download['name'],
+                        'kind' => 'recipe',
+                        'recipes_count' => count($recipes_from_file),
+                        'note' => count($recipes_from_file) === 1 ? '1 receita importada' : (count($recipes_from_file) . ' receitas importadas'),
+                    ];
+                } else {
+                    $audit_items[] = [
+                        'source' => 'drive',
+                        'name' => $download['name'],
+                        'kind' => 'skip',
+                        'recipes_count' => 0,
+                        'note' => 'Sem receita detectada',
+                    ];
                 }
             }
             $count++;
@@ -278,6 +399,7 @@ class PDFW_Ingestor
             'imported_files' => $imported_files,
             'image_entries' => self::unique_image_entries($image_entries),
             'cover_image' => $cover_image,
+            'audit_items' => $audit_items,
         ];
     }
 
@@ -593,6 +715,10 @@ class PDFW_Ingestor
 
         if ($ext === 'pdf') {
             if (! class_exists('\\Smalot\\PdfParser\\Parser')) {
+                $fallback_text = self::extract_pdf_text_with_python($contents, $logs, $path_hint);
+                if (trim($fallback_text) !== '') {
+                    return self::normalize_text($fallback_text);
+                }
                 $logs[] = 'PDF encontrado, mas parser PDF não está instalado no servidor.';
                 return '';
             }
@@ -615,6 +741,58 @@ class PDFW_Ingestor
         }
 
         return '';
+    }
+
+    /**
+     * @param array<int, string> $logs
+     */
+    private static function extract_pdf_text_with_python(string $contents, array &$logs, string $path_hint = ''): string
+    {
+        if (! function_exists('shell_exec')) {
+            return '';
+        }
+
+        $disabled = (string) ini_get('disable_functions');
+        if ($disabled !== '' && stripos($disabled, 'shell_exec') !== false) {
+            return '';
+        }
+
+        if (! defined('PDFW_PLUGIN_DIR')) {
+            return '';
+        }
+
+        $script = PDFW_PLUGIN_DIR . 'lib/pypdf_vendor/pdf_extract.py';
+        if (! is_file($script)) {
+            return '';
+        }
+
+        $tmp = $path_hint !== '' ? $path_hint : self::write_temp_file($contents, '.pdf');
+        if ($tmp === '') {
+            return '';
+        }
+
+        $created_tmp = $path_hint === '';
+        $python_binaries = ['python3', '/usr/bin/python3', '/usr/local/bin/python3'];
+        $output = '';
+
+        foreach ($python_binaries as $python_bin) {
+            $cmd = escapeshellarg($python_bin) . ' ' . escapeshellarg($script) . ' ' . escapeshellarg($tmp) . ' 2>/dev/null';
+            $result = shell_exec($cmd);
+            if (is_string($result) && trim($result) !== '') {
+                $output = $result;
+                break;
+            }
+        }
+
+        if ($created_tmp) {
+            @unlink($tmp);
+        }
+
+        if ($output !== '') {
+            $logs[] = 'PDF lido com fallback Python embarcado.';
+        }
+
+        return $output;
     }
 
     private static function write_temp_file(string $content, string $suffix): string
@@ -690,7 +868,8 @@ class PDFW_Ingestor
         $prep_idx = self::find_line_index($lines, '/\\b(modo\\s+de\\s+preparo|modo\\s+de\\s+fazer|preparo)\\b/iu');
 
         if ($ing_idx < 0 || $prep_idx < 0 || $prep_idx <= $ing_idx) {
-            return [];
+            $inline = self::extract_inline_recipe_from_lines($lines, $title);
+            return $inline ? [$inline] : [];
         }
 
         $ingredients = [];
@@ -736,6 +915,147 @@ class PDFW_Ingestor
             'steps' => $steps,
             'tip' => trim($tip),
         ]];
+    }
+
+    /**
+     * @param array<int, string> $lines
+     * @return array<string, mixed>|null
+     */
+    private static function extract_inline_recipe_from_lines(array $lines, string $title): ?array
+    {
+        if (count($lines) < 4) {
+            return null;
+        }
+
+        $ingredients = [];
+        $step_lines = [];
+        $tip = '';
+        $in_steps = false;
+
+        $max = min(count($lines), 80);
+        for ($i = 1; $i < $max; $i++) {
+            $line = trim((string) $lines[$i]);
+            if ($line === '') {
+                continue;
+            }
+
+            if (preg_match('/^(dica|obs\\.?|observa[cç][aã]o)\\s*:?/iu', $line)) {
+                $tip_text = trim((string) preg_replace('/^(dica|obs\\.?|observa[cç][aã]o)\\s*:?/iu', '', $line));
+                if ($tip_text !== '') {
+                    $tip = trim($tip . ' ' . $tip_text);
+                }
+                continue;
+            }
+
+            if (! $in_steps && self::looks_like_inline_step($line)) {
+                $in_steps = true;
+                $step_lines[] = $line;
+                continue;
+            }
+
+            if (! $in_steps) {
+                if (! self::looks_like_ingredient_line($line)) {
+                    continue;
+                }
+                $ingredients[] = self::clean_item($line);
+                continue;
+            }
+
+            if (self::is_break_heading($line)) {
+                break;
+            }
+            $step_lines[] = $line;
+        }
+
+        $ingredients = array_values(array_filter($ingredients, static function ($x) {
+            return $x !== '';
+        }));
+        $steps = self::explode_steps_from_lines($step_lines);
+
+        if (count($ingredients) < 2 || ! $steps) {
+            return null;
+        }
+
+        return [
+            'title' => $title,
+            'ingredients' => $ingredients,
+            'steps' => $steps,
+            'tip' => trim($tip),
+        ];
+    }
+
+    private static function looks_like_ingredient_line(string $line): bool
+    {
+        $line = trim($line);
+        if ($line === '') {
+            return false;
+        }
+        if (mb_strlen($line) > 120) {
+            return false;
+        }
+        if (preg_match('/\\.$/u', $line)) {
+            return false;
+        }
+        if (preg_match('/^(bater|misturar|adicionar|colocar|assar|cozinhar|fritar|esquentar|refogar|lavar|cortar|hidratar|temperar|unte|preaque[çc]a|levar)\\b/iu', $line)) {
+            return false;
+        }
+        if (preg_match('/^(\\d+[\\.,]?\\d*|\\d+\\/\\d+|[¼½¾])\\s*/u', $line)) {
+            return true;
+        }
+        if (preg_match('/\\b(g|kg|ml|l|colher|x[ií]cara|x[ií]caras|ovo|ovos)\\b/iu', $line)) {
+            return true;
+        }
+        if (strpos($line, ',') !== false && mb_strlen($line) <= 90) {
+            return true;
+        }
+        return (bool) preg_match('/^[\\p{L}\\s\\-]+$/u', $line);
+    }
+
+    private static function looks_like_inline_step(string $line): bool
+    {
+        $line = trim($line);
+        if ($line === '') {
+            return false;
+        }
+        if (preg_match('/^(\\d+[\\).:\\-]|passo\\s*\\d+)/iu', $line)) {
+            return true;
+        }
+        if (preg_match('/^(bater|misturar|adicionar|colocar|assar|cozinhar|fritar|esquentar|refogar|lavar|cortar|hidratar|temperar|unte|preaque[çc]a|levar|deixar|sirva|disponha|retire)\\b/iu', $line)) {
+            return true;
+        }
+        return mb_strlen($line) > 80 && (strpos($line, '.') !== false || strpos($line, ';') !== false);
+    }
+
+    /**
+     * @param array<int, string> $lines
+     * @return array<int, string>
+     */
+    private static function explode_steps_from_lines(array $lines): array
+    {
+        $joined = trim(implode(' ', array_map('trim', $lines)));
+        if ($joined === '') {
+            return [];
+        }
+
+        $parts = preg_split('/(?<=[\\.!?;])\\s+/u', $joined) ?: [];
+        $steps = [];
+        foreach ($parts as $part) {
+            $clean = self::clean_item(trim($part));
+            $clean = rtrim($clean, '.;:');
+            if ($clean === '') {
+                continue;
+            }
+            $steps[] = $clean;
+        }
+
+        if (! $steps) {
+            $single = self::clean_item($joined);
+            if ($single !== '') {
+                $steps[] = $single;
+            }
+        }
+
+        return $steps;
     }
 
     /**
