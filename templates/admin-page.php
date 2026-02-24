@@ -228,8 +228,10 @@
                 <div class="pdfw-transcribe-actions-inline">
                   <button type="button" class="button" id="pdfw-copy-transcription" disabled>Copiar texto</button>
                   <button type="button" class="button" id="pdfw-copy-transcription-all" disabled>Copiar output completo</button>
+                  <button type="button" class="button button-secondary" id="pdfw-resume-transcription" disabled>Retomar da parte falha</button>
                 </div>
               </div>
+              <p class="hint" id="pdfw-transcribe-resume-hint" hidden></p>
               <div class="pdfw-transcribe-downloads">
                 <button type="button" class="button button-secondary" id="pdfw-download-transcription-txt" disabled>Baixar TXT</button>
                 <button type="button" class="button button-secondary" id="pdfw-download-transcription-srt" disabled>Baixar SRT</button>

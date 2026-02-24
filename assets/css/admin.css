@@ -419,6 +419,19 @@
   padding: 12px;
   margin-bottom: 10px;
   background: #fff;
+  opacity: 0.9;
+  transform: scale(0.995);
+  transition: opacity 0.18s ease, transform 0.18s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.pdfw-recipe-card:hover,
+.pdfw-recipe-card:focus-within {
+  opacity: 1;
+  transform: scale(1);
+  border-color: #2271b1;
+  box-shadow: 0 6px 16px rgba(18, 62, 112, 0.12);
+  position: relative;
+  z-index: 2;
 }
 
 .pdfw-recipe-card.is-recipe {
@@ -826,9 +839,17 @@
 
 #pdfw-transcribe-progress {
   margin-top: 14px;
-  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-align: left;
   font-weight: 600;
   color: #0d5ea8;
+  border: 1px solid #c8dbee;
+  border-radius: 10px;
+  padding: 8px 12px;
+  background: #f5faff;
 }
 
 .pdfw-transcribe-result {

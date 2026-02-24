@@ -17,6 +17,12 @@ class PDFW_Ingestor
     private const TRANSCRIBE_TIMEOUT = 600;
     private const MAX_TRANSCRIBE_RESPONSE_BYTES = 32 * 1024 * 1024;
     private const TRANSCRIBE_STREAM_CHUNK_BYTES = 65536;
+    private const CHUNK_TRIGGER_SECONDS = 900.0;
+    private const CHUNK_TARGET_SECONDS = 720.0;
+    private const CHUNK_MIN_SECONDS = 600.0;
+    private const CHUNK_MAX_SECONDS = 750.0;
+    private const CHUNK_SILENCE_SEARCH_WINDOW = 120.0;
+    private const CHUNK_SILENCE_MIN_DURATION = 0.5;
     private const DEFAULT_WHISPER_URL = 'https://transcrever.rente.com.br/v1/audio/transcriptions';
 
     private static int $inline_image_count = 0;
@@ -158,9 +164,45 @@ class PDFW_Ingestor
 
     /**
      * @param array<int, string> $logs
+     * @return array{
+     *   text: string,
+     *   srt: string,
+     *   vtt: string,
+     *   lipsync_json: string,
+     *   partial?: bool,
+     *   failed_part?: int,
+     *   processed_parts?: int,
+     *   total_parts?: int,
+     *   resume_state?: array<string, mixed>
+     * }
+     */
+    public static function transcribe_media_outputs(
+        string $file_path,
+        array &$logs,
+        ?callable $progress_callback = null,
+        array $resume_state = []
+    ): array
+    {
+        $duration = self::get_media_duration_seconds($file_path);
+        if (
+            $duration > self::CHUNK_TRIGGER_SECONDS
+            && self::can_use_shell_exec()
+            && self::ffmpeg_available()
+        ) {
+            $chunked = self::transcribe_media_outputs_chunked($file_path, $duration, $logs, $progress_callback, $resume_state);
+            if (is_array($chunked)) {
+                return $chunked;
+            }
+        }
+
+        return self::transcribe_media_outputs_single($file_path, $logs);
+    }
+
+    /**
+     * @param array<int, string> $logs
      * @return array{text: string, srt: string, vtt: string, lipsync_json: string}
      */
-    public static function transcribe_media_outputs(string $file_path, array &$logs): array
+    private static function transcribe_media_outputs_single(string $file_path, array &$logs): array
     {
         $outputs = [
             'text' => '',
@@ -192,6 +234,1008 @@ class PDFW_Ingestor
         }
 
         return $outputs;
+    }
+
+    /**
+     * @param array<int, string> $logs
+     * @return array{text: string, srt: string, vtt: string, lipsync_json: string}|null
+     */
+    private static function transcribe_media_outputs_chunked(
+        string $file_path,
+        float $duration,
+        array &$logs,
+        ?callable $progress_callback = null,
+        array $resume_state = []
+    ): ?array {
+        $temp_dir = self::ensure_temp_image_dir($logs);
+        if ($temp_dir === '') {
+            return null;
+        }
+
+        $extension = strtolower(pathinfo($file_path, PATHINFO_EXTENSION));
+        if ($extension === '') {
+            $extension = 'mp4';
+        }
+
+        $segments = self::build_chunk_plan_vad($file_path, $duration, $logs);
+        if (count($segments) <= 1) {
+            return null;
+        }
+        $logs[] = 'Transcrição por fila ativada para mídia longa (' . number_format($duration / 60, 1, '.', '') . ' min).';
+
+        if ($progress_callback !== null) {
+            try {
+                $progress_callback([
+                    'stage' => 'chunking',
+                    'percent' => 4,
+                    'message' => 'Arquivo longo detectado. Segmentação inteligente concluída.',
+                    'current' => 0,
+                    'total' => count($segments),
+                ]);
+            } catch (Throwable $ignored) {
+            }
+        }
+
+        $segment_results = [];
+        $total = count($segments);
+        $failed_part = 0;
+        $start_part = 1;
+        $job_key = substr(md5($file_path . microtime(true)), 0, 10);
+        $last_chunk_index = 0;
+        $last_chunk_text = '';
+        $resume = self::normalize_chunk_resume_state($resume_state, $total);
+
+        if ($resume !== null) {
+            $segment_results = $resume['segment_results'];
+            $start_part = $resume['next_part'];
+            $last_chunk_index = max(0, count($segment_results));
+            if ($last_chunk_index > 0) {
+                $last = $segment_results[$last_chunk_index - 1] ?? null;
+                $last_chunk_text = is_array($last) ? (string) ($last['text'] ?? '') : '';
+            }
+            $logs[] = "Retomando transcrição da parte {$start_part} de {$total}.";
+
+            if ($progress_callback !== null) {
+                try {
+                    $resume_percent = 6 + (int) floor((max(0, $start_part - 1) / max(1, $total)) * 88);
+                    $progress_callback([
+                        'stage' => 'resuming',
+                        'percent' => max(6, min(95, $resume_percent)),
+                        'message' => "Retomando da parte {$start_part} de {$total}...",
+                        'current' => max(0, $start_part - 1),
+                        'total' => $total,
+                        'last_chunk_index' => $last_chunk_index,
+                        'last_chunk_text' => $last_chunk_text,
+                        'resume_state' => self::build_chunk_resume_state($segment_results, $start_part, $total),
+                    ]);
+                } catch (Throwable $ignored) {
+                }
+            }
+        }
+
+        foreach ($segments as $index => $segment) {
+            $part_no = $index + 1;
+            if ($part_no < $start_part) {
+                continue;
+            }
+            $chunk_path = self::build_temp_media_segment_path($temp_dir, $job_key, $part_no, $extension);
+            $cut_ok = self::cut_media_segment(
+                $file_path,
+                (float) ($segment['start'] ?? 0.0),
+                (float) ($segment['end'] ?? 0.0),
+                $chunk_path,
+                $logs
+            );
+            if (! $cut_ok || ! is_file($chunk_path)) {
+                $failed_part = $part_no;
+                $logs[] = "Falha ao preparar o segmento {$part_no}/{$total}.";
+                @unlink($chunk_path);
+                break;
+            }
+
+            try {
+                if ($progress_callback !== null) {
+                    try {
+                        $percent = 6 + (int) floor(($index / max(1, $total)) * 88);
+                        $progress_callback([
+                            'stage' => 'transcribing',
+                            'percent' => max(6, min(95, $percent)),
+                            'message' => "Transcrevendo parte {$part_no} de {$total}...",
+                            'current' => $part_no,
+                            'total' => $total,
+                            'last_chunk_index' => $last_chunk_index,
+                            'last_chunk_text' => $last_chunk_text,
+                        ]);
+                    } catch (Throwable $ignored) {
+                    }
+                }
+
+                $part_duration = self::get_media_duration_seconds($chunk_path);
+                $outputs = [];
+                $has_output = false;
+                for ($attempt = 1; $attempt <= 2; $attempt++) {
+                    $outputs = self::transcribe_media_outputs_single($chunk_path, $logs);
+                    $has_output = trim((string) ($outputs['text'] ?? '')) !== ''
+                        || trim((string) ($outputs['srt'] ?? '')) !== ''
+                        || trim((string) ($outputs['vtt'] ?? '')) !== '';
+                    if ($has_output) {
+                        break;
+                    }
+                    if ($attempt < 2) {
+                        $logs[] = "Tentando novamente a parte {$part_no}/{$total} após falha inicial.";
+                    }
+                }
+                if (! $has_output) {
+                    $failed_part = $part_no;
+                    $logs[] = "Falha na transcrição da parte {$part_no}/{$total}.";
+                    break;
+                }
+
+                $segment_results[] = [
+                    'text' => (string) ($outputs['text'] ?? ''),
+                    'srt' => (string) ($outputs['srt'] ?? ''),
+                    'vtt' => (string) ($outputs['vtt'] ?? ''),
+                    'lipsync_json' => (string) ($outputs['lipsync_json'] ?? ''),
+                    'duration' => $part_duration > 0.0 ? $part_duration : 0.0,
+                ];
+                $last_chunk_index = $part_no;
+                $last_chunk_text = (string) ($outputs['text'] ?? '');
+
+                if ($progress_callback !== null) {
+                    try {
+                        $done_percent = 8 + (int) floor(($part_no / max(1, $total)) * 90);
+                        $progress_callback([
+                            'stage' => 'chunk_done',
+                            'percent' => max(8, min(98, $done_percent)),
+                            'message' => "Parte {$part_no} de {$total} concluída.",
+                            'current' => $part_no,
+                            'total' => $total,
+                            'chunk_index' => $part_no,
+                            'chunk_text' => (string) ($outputs['text'] ?? ''),
+                            'last_chunk_index' => $last_chunk_index,
+                            'last_chunk_text' => $last_chunk_text,
+                            'resume_state' => self::build_chunk_resume_state(
+                                $segment_results,
+                                min($total + 1, $part_no + 1),
+                                $total
+                            ),
+                        ]);
+                    } catch (Throwable $ignored) {
+                    }
+                }
+            } finally {
+                @unlink($chunk_path);
+            }
+        }
+
+        if (! $segment_results) {
+            $logs[] = 'Não foi possível transcrever os segmentos do arquivo longo.';
+            return [
+                'text' => '',
+                'srt' => '',
+                'vtt' => '',
+                'lipsync_json' => self::build_lipsync_payload([], ''),
+                'partial' => true,
+                'failed_part' => $failed_part > 0 ? $failed_part : 1,
+                'processed_parts' => 0,
+                'total_parts' => $total,
+                'resume_state' => self::build_chunk_resume_state([], $failed_part > 0 ? $failed_part : 1, $total),
+            ];
+        }
+
+        $merged = self::merge_transcription_segments($segment_results, $logs);
+        $merged['partial'] = $failed_part > 0;
+        $merged['failed_part'] = $failed_part;
+        $merged['processed_parts'] = count($segment_results);
+        $merged['total_parts'] = $total;
+        $merged['resume_state'] = self::build_chunk_resume_state(
+            $segment_results,
+            $failed_part > 0 ? $failed_part : ($total + 1),
+            $total
+        );
+
+        if ($failed_part > 0) {
+            $logs[] = "Processo parcial: concluiu {$merged['processed_parts']} de {$total} partes. Retome da parte {$failed_part}.";
+        }
+
+        if ($progress_callback !== null) {
+            try {
+                $progress_callback([
+                    'stage' => $failed_part > 0 ? 'partial' : 'done',
+                    'percent' => $failed_part > 0 ? 97 : 100,
+                    'message' => $failed_part > 0
+                        ? "Transcrição parcial concluída até a parte " . (int) $merged['processed_parts'] . "."
+                        : 'Transcrição finalizada.',
+                    'current' => (int) $merged['processed_parts'],
+                    'total' => $total,
+                    'last_chunk_index' => $last_chunk_index,
+                    'last_chunk_text' => $last_chunk_text,
+                    'resume_state' => $merged['resume_state'],
+                ]);
+            } catch (Throwable $ignored) {
+            }
+        }
+
+        return $merged;
+    }
+
+    /**
+     * @param array<string, mixed> $resume_state
+     * @return array{segment_results: array<int, array{text: string, srt: string, vtt: string, lipsync_json: string, duration: float}>, next_part: int}|null
+     */
+    private static function normalize_chunk_resume_state(array $resume_state, int $total_parts): ?array
+    {
+        if ($total_parts <= 0) {
+            return null;
+        }
+
+        $next_part = max(1, (int) ($resume_state['next_part'] ?? 1));
+        if ($next_part > ($total_parts + 1)) {
+            $next_part = $total_parts + 1;
+        }
+
+        $raw_results = $resume_state['segment_results'] ?? [];
+        if (! is_array($raw_results)) {
+            $raw_results = [];
+        }
+
+        $segment_results = [];
+        foreach ($raw_results as $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+
+            $segment_results[] = [
+                'text' => self::normalize_text((string) ($row['text'] ?? '')),
+                'srt' => (string) ($row['srt'] ?? ''),
+                'vtt' => (string) ($row['vtt'] ?? ''),
+                'lipsync_json' => (string) ($row['lipsync_json'] ?? ''),
+                'duration' => max(0.0, (float) ($row['duration'] ?? 0.0)),
+            ];
+        }
+
+        $expected_done = max(0, $next_part - 1);
+        if (count($segment_results) < $expected_done) {
+            $expected_done = count($segment_results);
+            $next_part = $expected_done + 1;
+        } elseif (count($segment_results) > $expected_done) {
+            $segment_results = array_slice($segment_results, 0, $expected_done);
+        }
+
+        if ($next_part <= 1 && ! $segment_results) {
+            return null;
+        }
+
+        return [
+            'segment_results' => $segment_results,
+            'next_part' => $next_part,
+        ];
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $segment_results
+     * @return array<string, mixed>
+     */
+    private static function build_chunk_resume_state(array $segment_results, int $next_part, int $total_parts): array
+    {
+        $clean_results = [];
+        foreach ($segment_results as $segment) {
+            if (! is_array($segment)) {
+                continue;
+            }
+            $clean_results[] = [
+                'text' => self::normalize_text((string) ($segment['text'] ?? '')),
+                'srt' => (string) ($segment['srt'] ?? ''),
+                'vtt' => (string) ($segment['vtt'] ?? ''),
+                'lipsync_json' => (string) ($segment['lipsync_json'] ?? ''),
+                'duration' => max(0.0, (float) ($segment['duration'] ?? 0.0)),
+            ];
+        }
+
+        $normalized_next = max(1, $next_part);
+        if ($total_parts > 0 && $normalized_next > ($total_parts + 1)) {
+            $normalized_next = $total_parts + 1;
+        }
+
+        return [
+            'next_part' => $normalized_next,
+            'total_parts' => max(0, $total_parts),
+            'segment_results' => $clean_results,
+            'updated_at' => time(),
+        ];
+    }
+
+    /**
+     * @param array<int, string> $logs
+     * @return array<int, array{start: float, end: float, duration: float}>
+     */
+    private static function build_chunk_plan_vad(string $file_path, float $duration, array &$logs): array
+    {
+        if ($duration <= self::CHUNK_TRIGGER_SECONDS) {
+            return [[
+                'start' => 0.0,
+                'end' => max(0.0, $duration),
+                'duration' => max(0.0, $duration),
+            ]];
+        }
+
+        $silence_points = self::detect_silence_points($file_path, $logs);
+        $segments = [];
+        $start = 0.0;
+        $guard = 0;
+
+        while (($duration - $start) > 1.0 && $guard < 400) {
+            $guard++;
+            $remaining = $duration - $start;
+            if ($remaining <= self::CHUNK_TARGET_SECONDS + 60.0) {
+                $end = $duration;
+            } else {
+                $target = min($duration, $start + self::CHUNK_TARGET_SECONDS);
+                $end = self::pick_silence_cut($silence_points, $start, $target, $duration);
+            }
+
+            if ($end <= ($start + 1.0)) {
+                $end = min($duration, $start + self::CHUNK_TARGET_SECONDS);
+            }
+            if (($end - $start) < self::CHUNK_MIN_SECONDS && $end < $duration) {
+                $end = min($duration, $start + self::CHUNK_MIN_SECONDS);
+            }
+            if (($end - $start) > self::CHUNK_MAX_SECONDS && $end < $duration) {
+                $end = min($duration, $start + self::CHUNK_MAX_SECONDS);
+            }
+            if (($duration - $end) < 90.0) {
+                $end = $duration;
+            }
+
+            $segments[] = [
+                'start' => $start,
+                'end' => $end,
+                'duration' => max(0.0, $end - $start),
+            ];
+            $start = $end;
+        }
+
+        if (! $segments) {
+            return [[
+                'start' => 0.0,
+                'end' => max(0.0, $duration),
+                'duration' => max(0.0, $duration),
+            ]];
+        }
+
+        $logs[] = 'Segmentação inteligente concluída: ' . count($segments) . ' partes (~10-12 min).';
+        return $segments;
+    }
+
+    /**
+     * @param array<int, float> $silence_points
+     */
+    private static function pick_silence_cut(array $silence_points, float $start, float $target, float $duration): float
+    {
+        $window_start = max($start + self::CHUNK_MIN_SECONDS, $target - self::CHUNK_SILENCE_SEARCH_WINDOW);
+        $window_end = min($duration, $target + self::CHUNK_SILENCE_SEARCH_WINDOW);
+
+        $best = 0.0;
+        $best_distance = PHP_FLOAT_MAX;
+
+        foreach ($silence_points as $point) {
+            if ($point < $window_start || $point > $window_end) {
+                continue;
+            }
+            $distance = abs($point - $target);
+            if ($distance < $best_distance) {
+                $best_distance = $distance;
+                $best = $point;
+            }
+        }
+
+        if ($best > 0.0) {
+            return $best;
+        }
+
+        return min($duration, $target);
+    }
+
+    /**
+     * @param array<int, string> $logs
+     * @return array<int, float>
+     */
+    private static function detect_silence_points(string $file_path, array &$logs): array
+    {
+        $ffmpeg = self::binary_path('ffmpeg');
+        if ($ffmpeg === '') {
+            return [];
+        }
+
+        $cmd = escapeshellcmd($ffmpeg)
+            . ' -hide_banner -nostats -i ' . escapeshellarg($file_path)
+            . ' -af ' . escapeshellarg('silencedetect=noise=-30dB:d=' . self::CHUNK_SILENCE_MIN_DURATION)
+            . ' -f null - 2>&1';
+        $raw = shell_exec($cmd);
+        if (! is_string($raw) || trim($raw) === '') {
+            return [];
+        }
+
+        if (preg_match_all('/silence_end:\s*([0-9]+(?:\.[0-9]+)?)/i', $raw, $matches) !== 1) {
+            return [];
+        }
+
+        $points = [];
+        foreach ((array) ($matches[1] ?? []) as $value) {
+            $sec = (float) $value;
+            if ($sec > 0.0) {
+                $points[] = $sec;
+            }
+        }
+
+        if (! $points) {
+            $logs[] = 'VAD: nenhum silêncio relevante encontrado, usando cortes por tempo.';
+            return [];
+        }
+
+        sort($points, SORT_NUMERIC);
+        $unique = [];
+        foreach ($points as $point) {
+            $key = sprintf('%.3f', $point);
+            $unique[$key] = $point;
+        }
+        $result = array_values($unique);
+        $logs[] = 'VAD: ' . count($result) . ' pontos de silêncio detectados.';
+
+        return $result;
+    }
+
+    /**
+     * @param array<int, string> $logs
+     */
+    private static function cut_media_segment(
+        string $source_path,
+        float $start,
+        float $end,
+        string $target_path,
+        array &$logs
+    ): bool {
+        $ffmpeg = self::binary_path('ffmpeg');
+        if ($ffmpeg === '') {
+            return false;
+        }
+
+        $start = max(0.0, $start);
+        $end = max($start + 0.1, $end);
+        $start_arg = self::format_ffmpeg_seconds($start);
+        $end_arg = self::format_ffmpeg_seconds($end);
+
+        $base_cmd = escapeshellcmd($ffmpeg)
+            . ' -hide_banner -loglevel error -y -ss ' . escapeshellarg($start_arg)
+            . ' -to ' . escapeshellarg($end_arg)
+            . ' -i ' . escapeshellarg($source_path);
+
+        $copy_cmd = $base_cmd . ' -c copy ' . escapeshellarg($target_path) . ' 2>&1';
+        $copy_out = shell_exec($copy_cmd);
+        if (is_file($target_path) && @filesize($target_path) > 0) {
+            return true;
+        }
+
+        @unlink($target_path);
+        $fallback_cmd = $base_cmd
+            . ' -vn -ac 1 -ar 16000 -c:a aac -b:a 96k '
+            . escapeshellarg($target_path)
+            . ' 2>&1';
+        $fallback_out = shell_exec($fallback_cmd);
+        if (is_file($target_path) && @filesize($target_path) > 0) {
+            return true;
+        }
+
+        $snippet = '';
+        if (is_string($copy_out) && trim($copy_out) !== '') {
+            $snippet = trim(mb_substr($copy_out, 0, 220));
+        } elseif (is_string($fallback_out) && trim($fallback_out) !== '') {
+            $snippet = trim(mb_substr($fallback_out, 0, 220));
+        }
+        if ($snippet !== '') {
+            $logs[] = 'Falha ao cortar segmento: ' . $snippet;
+        }
+
+        return false;
+    }
+
+    private static function format_ffmpeg_seconds(float $seconds): string
+    {
+        if ($seconds < 0.0) {
+            $seconds = 0.0;
+        }
+        return number_format($seconds, 3, '.', '');
+    }
+
+    private static function build_temp_media_segment_path(string $temp_dir, string $job_key, int $part_no, string $ext): string
+    {
+        $clean_ext = strtolower(preg_replace('/[^a-z0-9]/', '', $ext));
+        if ($clean_ext === '') {
+            $clean_ext = 'mp4';
+        }
+        $filename = sprintf('media-%s-part-%03d.%s', $job_key, max(1, $part_no), $clean_ext);
+        return wp_normalize_path(trailingslashit($temp_dir) . $filename);
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $segments_data
+     * @param array<int, string> $logs
+     * @return array{text: string, srt: string, vtt: string, lipsync_json: string}
+     */
+    private static function merge_transcription_segments(array $segments_data, array &$logs): array
+    {
+        $full_text = [];
+        $full_srt_cues = [];
+        $full_vtt_cues = [];
+        $full_lipsync_cues = [];
+        $time_offset = 0.0;
+        $first_lipsync_config = [];
+
+        foreach ($segments_data as $segment) {
+            if (! is_array($segment)) {
+                continue;
+            }
+
+            $segment_text = self::normalize_text((string) ($segment['text'] ?? ''));
+            if ($segment_text !== '') {
+                $full_text[] = $segment_text;
+            }
+
+            $lipsync_raw = (string) ($segment['lipsync_json'] ?? '');
+            $lipsync = json_decode($lipsync_raw, true);
+            if (is_array($lipsync) && is_array($lipsync['config'] ?? null) && ! $first_lipsync_config) {
+                $first_lipsync_config = $lipsync['config'];
+            }
+
+            $cues = is_array($lipsync['cues'] ?? null) ? $lipsync['cues'] : [];
+            if (! $cues && $segment_text !== '') {
+                $fallback_lipsync = json_decode(self::build_lipsync_payload([], $segment_text), true);
+                $cues = is_array($fallback_lipsync['cues'] ?? null) ? $fallback_lipsync['cues'] : [];
+            }
+
+            foreach ($cues as $cue) {
+                if (! is_array($cue)) {
+                    continue;
+                }
+                $start = isset($cue['start']) ? (float) $cue['start'] : 0.0;
+                $end = isset($cue['end']) ? (float) $cue['end'] : $start;
+                if ($end <= $start) {
+                    $end = $start + 0.2;
+                }
+                $cue['start'] = round(max(0.0, $start + $time_offset), 3);
+                $cue['end'] = round(max($cue['start'] + 0.001, $end + $time_offset), 3);
+                $full_lipsync_cues[] = $cue;
+            }
+
+            $full_srt_cues = array_merge(
+                $full_srt_cues,
+                self::parse_srt_cues((string) ($segment['srt'] ?? ''), $time_offset)
+            );
+            $full_vtt_cues = array_merge(
+                $full_vtt_cues,
+                self::parse_vtt_cues((string) ($segment['vtt'] ?? ''), $time_offset)
+            );
+
+            $duration = isset($segment['duration']) ? (float) $segment['duration'] : 0.0;
+            if ($duration <= 0.0) {
+                $duration = self::infer_segment_duration($segment);
+            }
+            $time_offset += max(0.0, $duration);
+        }
+
+        $merged_text = trim(implode(' ', array_filter($full_text, static function ($value) {
+            return trim((string) $value) !== '';
+        })));
+
+        if (! $full_lipsync_cues && $merged_text !== '') {
+            $lipsync_json = self::build_lipsync_payload([], $merged_text);
+        } else {
+            $lipsync_payload = [
+                'format' => 'pdfw_lipsync_v1',
+                'config' => $first_lipsync_config ?: [
+                    'engine' => 'faster-whisper',
+                    'language' => 'pt',
+                    'timing_source' => 'segment-merge',
+                    'time_unit' => 'seconds',
+                    'fps_hint' => 30,
+                ],
+                'text' => $merged_text,
+                'cues' => $full_lipsync_cues,
+            ];
+            $lipsync_json = (string) wp_json_encode(
+                $lipsync_payload,
+                JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+            );
+        }
+
+        $merged_srt = self::render_srt_cues($full_srt_cues);
+        $merged_vtt = self::render_vtt_cues($full_vtt_cues);
+
+        if ($merged_srt === '' && $merged_vtt === '' && $merged_text !== '') {
+            $logs[] = 'Merge de segmentos finalizado sem trilhas SRT/VTT. Apenas texto/lipsync gerados.';
+        }
+
+        return [
+            'text' => $merged_text,
+            'srt' => $merged_srt,
+            'vtt' => $merged_vtt,
+            'lipsync_json' => $lipsync_json,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $segment
+     */
+    private static function infer_segment_duration(array $segment): float
+    {
+        $max_end = 0.0;
+
+        $lipsync = json_decode((string) ($segment['lipsync_json'] ?? ''), true);
+        $cues = is_array($lipsync['cues'] ?? null) ? $lipsync['cues'] : [];
+        foreach ($cues as $cue) {
+            if (! is_array($cue)) {
+                continue;
+            }
+            $end = isset($cue['end']) ? (float) $cue['end'] : 0.0;
+            if ($end > $max_end) {
+                $max_end = $end;
+            }
+        }
+
+        $srt_cues = self::parse_srt_cues((string) ($segment['srt'] ?? ''), 0.0);
+        foreach ($srt_cues as $cue) {
+            if (($cue['end'] ?? 0.0) > $max_end) {
+                $max_end = (float) $cue['end'];
+            }
+        }
+
+        $vtt_cues = self::parse_vtt_cues((string) ($segment['vtt'] ?? ''), 0.0);
+        foreach ($vtt_cues as $cue) {
+            if (($cue['end'] ?? 0.0) > $max_end) {
+                $max_end = (float) $cue['end'];
+            }
+        }
+
+        return max(0.0, $max_end);
+    }
+
+    /**
+     * @return array<int, array{start: float, end: float, text: string}>
+     */
+    private static function parse_srt_cues(string $srt, float $offset): array
+    {
+        $body = preg_replace("/\r\n?/", "\n", trim($srt));
+        if ($body === '') {
+            return [];
+        }
+
+        $blocks = preg_split("/\n{2,}/", $body) ?: [];
+        $cues = [];
+
+        foreach ($blocks as $block) {
+            $lines = array_values(array_filter(array_map('trim', explode("\n", (string) $block)), static function ($line) {
+                return $line !== '';
+            }));
+            if (! $lines) {
+                continue;
+            }
+
+            if (preg_match('/^\d+$/', $lines[0]) === 1) {
+                array_shift($lines);
+            }
+            if (! $lines) {
+                continue;
+            }
+
+            $timing = array_shift($lines);
+            if (
+                preg_match(
+                    '/^(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})(?:\s+.*)?$/',
+                    (string) $timing,
+                    $match
+                ) !== 1
+            ) {
+                continue;
+            }
+
+            $start = self::parse_srt_time_to_seconds((string) $match[1]) + $offset;
+            $end = self::parse_srt_time_to_seconds((string) $match[2]) + $offset;
+            if ($end <= $start) {
+                $end = $start + 0.2;
+            }
+            $text = trim(implode("\n", $lines));
+            if ($text === '') {
+                continue;
+            }
+
+            $cues[] = [
+                'start' => $start,
+                'end' => $end,
+                'text' => $text,
+            ];
+        }
+
+        return $cues;
+    }
+
+    /**
+     * @return array<int, array{start: float, end: float, text: string}>
+     */
+    private static function parse_vtt_cues(string $vtt, float $offset): array
+    {
+        $body = preg_replace("/\r\n?/", "\n", trim($vtt));
+        if ($body === '') {
+            return [];
+        }
+
+        $body = preg_replace('/^WEBVTT[^\n]*\n?/i', '', (string) $body);
+        $blocks = preg_split("/\n{2,}/", (string) $body) ?: [];
+        $cues = [];
+
+        foreach ($blocks as $block) {
+            $raw_lines = array_values(array_filter(array_map('trim', explode("\n", (string) $block)), static function ($line) {
+                return $line !== '';
+            }));
+            if (! $raw_lines) {
+                continue;
+            }
+
+            $timing_line_index = 0;
+            if (strpos($raw_lines[0], '-->') === false && isset($raw_lines[1]) && strpos($raw_lines[1], '-->') !== false) {
+                $timing_line_index = 1;
+            }
+            $timing = (string) ($raw_lines[$timing_line_index] ?? '');
+            if (
+                preg_match(
+                    '/^((?:\d{2}:)?\d{2}:\d{2}\.\d{3})\s*-->\s*((?:\d{2}:)?\d{2}:\d{2}\.\d{3})(?:\s+.*)?$/',
+                    $timing,
+                    $match
+                ) !== 1
+            ) {
+                continue;
+            }
+
+            $start = self::parse_vtt_time_to_seconds((string) $match[1]) + $offset;
+            $end = self::parse_vtt_time_to_seconds((string) $match[2]) + $offset;
+            if ($end <= $start) {
+                $end = $start + 0.2;
+            }
+
+            if ($timing_line_index > 0) {
+                array_shift($raw_lines);
+            }
+            array_shift($raw_lines);
+            $text = trim(implode("\n", $raw_lines));
+            if ($text === '') {
+                continue;
+            }
+
+            $cues[] = [
+                'start' => $start,
+                'end' => $end,
+                'text' => $text,
+            ];
+        }
+
+        return $cues;
+    }
+
+    /**
+     * @param array<int, array{start: float, end: float, text: string}> $cues
+     */
+    private static function render_srt_cues(array $cues): string
+    {
+        if (! $cues) {
+            return '';
+        }
+
+        usort($cues, static function ($a, $b) {
+            $a_start = (float) ($a['start'] ?? 0.0);
+            $b_start = (float) ($b['start'] ?? 0.0);
+            return $a_start <=> $b_start;
+        });
+
+        $lines = [];
+        $index = 1;
+        foreach ($cues as $cue) {
+            $start = max(0.0, (float) ($cue['start'] ?? 0.0));
+            $end = max($start + 0.001, (float) ($cue['end'] ?? 0.0));
+            $text = trim((string) ($cue['text'] ?? ''));
+            if ($text === '') {
+                continue;
+            }
+
+            $lines[] = (string) $index;
+            $lines[] = self::format_srt_seconds($start) . ' --> ' . self::format_srt_seconds($end);
+            $lines[] = $text;
+            $lines[] = '';
+            $index++;
+        }
+
+        return trim(implode("\n", $lines));
+    }
+
+    /**
+     * @param array<int, array{start: float, end: float, text: string}> $cues
+     */
+    private static function render_vtt_cues(array $cues): string
+    {
+        if (! $cues) {
+            return '';
+        }
+
+        usort($cues, static function ($a, $b) {
+            $a_start = (float) ($a['start'] ?? 0.0);
+            $b_start = (float) ($b['start'] ?? 0.0);
+            return $a_start <=> $b_start;
+        });
+
+        $lines = ['WEBVTT', ''];
+        foreach ($cues as $cue) {
+            $start = max(0.0, (float) ($cue['start'] ?? 0.0));
+            $end = max($start + 0.001, (float) ($cue['end'] ?? 0.0));
+            $text = trim((string) ($cue['text'] ?? ''));
+            if ($text === '') {
+                continue;
+            }
+
+            $lines[] = self::format_vtt_seconds($start) . ' --> ' . self::format_vtt_seconds($end);
+            $lines[] = $text;
+            $lines[] = '';
+        }
+
+        return trim(implode("\n", $lines));
+    }
+
+    private static function parse_srt_time_to_seconds(string $time): float
+    {
+        if (preg_match('/^(\d{2}):(\d{2}):(\d{2}),(\d{3})$/', trim($time), $match) !== 1) {
+            return 0.0;
+        }
+
+        return ((int) $match[1] * 3600)
+            + ((int) $match[2] * 60)
+            + (int) $match[3]
+            + ((int) $match[4] / 1000);
+    }
+
+    private static function parse_vtt_time_to_seconds(string $time): float
+    {
+        $value = trim($time);
+        if (preg_match('/^(\d{2}):(\d{2}):(\d{2})\.(\d{3})$/', $value, $match) === 1) {
+            return ((int) $match[1] * 3600)
+                + ((int) $match[2] * 60)
+                + (int) $match[3]
+                + ((int) $match[4] / 1000);
+        }
+        if (preg_match('/^(\d{2}):(\d{2})\.(\d{3})$/', $value, $match) === 1) {
+            return ((int) $match[1] * 60)
+                + (int) $match[2]
+                + ((int) $match[3] / 1000);
+        }
+        return 0.0;
+    }
+
+    private static function format_srt_seconds(float $seconds): string
+    {
+        $seconds = max(0.0, $seconds);
+        $hours = (int) floor($seconds / 3600);
+        $seconds -= $hours * 3600;
+        $minutes = (int) floor($seconds / 60);
+        $seconds -= $minutes * 60;
+        $whole = (int) floor($seconds);
+        $ms = (int) round(($seconds - $whole) * 1000);
+        if ($ms >= 1000) {
+            $ms -= 1000;
+            $whole += 1;
+        }
+        if ($whole >= 60) {
+            $whole -= 60;
+            $minutes += 1;
+        }
+        if ($minutes >= 60) {
+            $minutes -= 60;
+            $hours += 1;
+        }
+
+        return sprintf('%02d:%02d:%02d,%03d', $hours, $minutes, $whole, $ms);
+    }
+
+    private static function format_vtt_seconds(float $seconds): string
+    {
+        $seconds = max(0.0, $seconds);
+        $hours = (int) floor($seconds / 3600);
+        $seconds -= $hours * 3600;
+        $minutes = (int) floor($seconds / 60);
+        $seconds -= $minutes * 60;
+        $whole = (int) floor($seconds);
+        $ms = (int) round(($seconds - $whole) * 1000);
+        if ($ms >= 1000) {
+            $ms -= 1000;
+            $whole += 1;
+        }
+        if ($whole >= 60) {
+            $whole -= 60;
+            $minutes += 1;
+        }
+        if ($minutes >= 60) {
+            $minutes -= 60;
+            $hours += 1;
+        }
+
+        return sprintf('%02d:%02d:%02d.%03d', $hours, $minutes, $whole, $ms);
+    }
+
+    private static function get_media_duration_seconds(string $file_path): float
+    {
+        if (! is_file($file_path) || ! is_readable($file_path)) {
+            return 0.0;
+        }
+
+        if (! self::can_use_shell_exec()) {
+            return 0.0;
+        }
+
+        $ffprobe = self::binary_path('ffprobe');
+        if ($ffprobe === '') {
+            return 0.0;
+        }
+
+        $cmd = escapeshellcmd($ffprobe)
+            . ' -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 '
+            . escapeshellarg($file_path)
+            . ' 2>/dev/null';
+        $raw = shell_exec($cmd);
+        if (! is_string($raw) || trim($raw) === '') {
+            return 0.0;
+        }
+
+        $duration = (float) trim($raw);
+        return $duration > 0.0 ? $duration : 0.0;
+    }
+
+    private static function can_use_shell_exec(): bool
+    {
+        if (! function_exists('shell_exec')) {
+            return false;
+        }
+
+        $disabled = (string) ini_get('disable_functions');
+        if ($disabled === '') {
+            return true;
+        }
+
+        $disabled_map = array_map('trim', explode(',', strtolower($disabled)));
+        return ! in_array('shell_exec', $disabled_map, true);
+    }
+
+    private static function ffmpeg_available(): bool
+    {
+        return self::binary_path('ffmpeg') !== '' && self::binary_path('ffprobe') !== '';
+    }
+
+    private static function binary_path(string $binary): string
+    {
+        static $cache = [];
+        $key = strtolower(trim($binary));
+        if ($key === '') {
+            return '';
+        }
+        if (isset($cache[$key])) {
+            return $cache[$key];
+        }
+        if (! self::can_use_shell_exec()) {
+            $cache[$key] = '';
+            return '';
+        }
+
+        $result = shell_exec('command -v ' . escapeshellarg($key) . ' 2>/dev/null');
+        $path = is_string($result) ? trim($result) : '';
+        if ($path !== '' && ! is_executable($path)) {
+            $path = '';
+        }
+        $cache[$key] = $path;
+        return $path;
     }
 
     /**
@@ -287,7 +1331,7 @@ class PDFW_Ingestor
                 ];
             }
 
-            $text = self::transcribe_audio($path, $logs);
+            $text = self::transcribe_media($path, $logs);
             if (trim($text) === '') {
                 $logs[] = "Não foi possível transcrever áudio: {$name}";
                 return [
@@ -1043,7 +2087,7 @@ class PDFW_Ingestor
                 return [];
             }
 
-            $text = self::transcribe_audio($tmp, $logs);
+            $text = self::transcribe_media($tmp, $logs);
             @unlink($tmp);
             if (trim($text) === '') {
                 return [];

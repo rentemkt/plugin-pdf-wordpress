@@ -32,6 +32,7 @@ final class PDFW_Plugin
         add_action('wp_ajax_pdfw_drive_scan', [$this->admin_page, 'handle_drive_scan']);
         add_action('wp_ajax_pdfw_drive_process', [$this->admin_page, 'handle_drive_process']);
         add_action('wp_ajax_pdfw_standalone_transcribe', [$this->admin_page, 'handle_standalone_transcribe']);
+        add_action('wp_ajax_pdfw_transcribe_progress', [$this->admin_page, 'handle_transcribe_progress']);
         add_action('wp_ajax_pdfw_preview', [$this->admin_page, 'handle_preview']);
         add_action('wp_ajax_pdfw_projects', [$this->admin_page, 'handle_projects']);
     }

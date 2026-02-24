@@ -12,6 +12,10 @@ class PDFW_Admin_Page
     private const PROJECTS_OPTION_KEY = 'pdfw_projects_store';
     private const PREVIEW_CACHE_PREFIX = 'pdfw_preview_cache_';
     private const PREVIEW_CACHE_TTL = 1800;
+    private const TRANSCRIBE_PROGRESS_PREFIX = 'pdfw_transcribe_progress_';
+    private const TRANSCRIBE_PROGRESS_TTL = 7200;
+    private const TRANSCRIBE_RESUME_PREFIX = 'pdfw_transcribe_resume_';
+    private const TRANSCRIBE_RESUME_TTL = 86400;
 
     public function register_menu(): void
     {
@@ -204,65 +208,279 @@ class PDFW_Admin_Page
             update_option(self::WHISPER_OPTION_KEY, $whisper_url_override, false);
         }
 
-        if (! isset($_FILES['audio_file']) || ! is_array($_FILES['audio_file'])) {
-            wp_send_json_error(['message' => 'Nenhum arquivo enviado.'], 400);
+        $job_id_raw = isset($_POST['job_id']) ? wp_unslash((string) $_POST['job_id']) : '';
+        $job_id = $this->sanitize_transcribe_job_id($job_id_raw);
+        if ($job_id === '') {
+            $job_id = 'job_' . strtolower(wp_generate_password(14, false, false));
         }
 
-        $file = $_FILES['audio_file'];
-        $name = sanitize_file_name((string) ($file['name'] ?? ''));
-        $tmp_name = (string) ($file['tmp_name'] ?? '');
-        $error = isset($file['error']) ? (int) $file['error'] : UPLOAD_ERR_NO_FILE;
-        $size = isset($file['size']) ? (int) $file['size'] : 0;
+        $resume_token_raw = isset($_POST['resume_token']) ? wp_unslash((string) $_POST['resume_token']) : '';
+        $resume_token = $this->sanitize_transcribe_resume_token($resume_token_raw);
+        $resume_entry = [];
+        $has_uploaded_file = isset($_FILES['audio_file'])
+            && is_array($_FILES['audio_file'])
+            && (string) ($_FILES['audio_file']['tmp_name'] ?? '') !== '';
+        $is_resume_request = ($resume_token !== '' && ! $has_uploaded_file);
+        $source_path = '';
+        $name = '';
+        $ext = '';
+        $resume_state = [];
 
-        if ($error !== UPLOAD_ERR_OK || $tmp_name === '' || ! is_uploaded_file($tmp_name)) {
-            wp_send_json_error(['message' => 'Falha no upload do arquivo para transcrição.'], 400);
+        if ($is_resume_request) {
+            $resume_entry = $this->get_transcribe_resume_state($resume_token);
+            $source_path = $this->normalize_transcribe_source_path((string) ($resume_entry['file_path'] ?? ''));
+            if ($source_path === '' || ! is_file($source_path) || ! is_readable($source_path)) {
+                $this->delete_transcribe_resume_state($resume_token, true);
+                wp_send_json_error([
+                    'message' => 'Estado de retomada expirado ou inválido. Faça novo upload para reiniciar.',
+                ], 410);
+            }
+
+            $name = sanitize_file_name((string) ($resume_entry['file_name'] ?? basename($source_path)));
+            $ext = strtolower(pathinfo($name !== '' ? $name : $source_path, PATHINFO_EXTENSION));
+            $resume_state = is_array($resume_entry['resume_state'] ?? null) ? $resume_entry['resume_state'] : [];
+        } else {
+            if (! isset($_FILES['audio_file']) || ! is_array($_FILES['audio_file'])) {
+                wp_send_json_error(['message' => 'Nenhum arquivo enviado.'], 400);
+            }
+
+            $file = $_FILES['audio_file'];
+            $name = sanitize_file_name((string) ($file['name'] ?? ''));
+            $tmp_name = (string) ($file['tmp_name'] ?? '');
+            $error = isset($file['error']) ? (int) $file['error'] : UPLOAD_ERR_NO_FILE;
+            $size = isset($file['size']) ? (int) $file['size'] : 0;
+
+            if ($error !== UPLOAD_ERR_OK || $tmp_name === '' || ! is_uploaded_file($tmp_name)) {
+                wp_send_json_error(['message' => 'Falha no upload do arquivo para transcrição.'], 400);
+            }
+
+            $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+            $allowed_ext = ['mp3', 'wav', 'm4a', 'ogg', 'mp4', 'mpeg', 'webm', 'mkv'];
+            if (! in_array($ext, $allowed_ext, true)) {
+                wp_send_json_error(['message' => 'Formato não suportado para transcrição.'], 400);
+            }
+            if ($size <= 0) {
+                wp_send_json_error(['message' => 'Arquivo enviado está vazio.'], 400);
+            }
+
+            if ($resume_token === '') {
+                $resume_token = $this->create_transcribe_resume_token();
+            }
+
+            $source_path = $this->store_uploaded_transcribe_source($tmp_name, $name, $ext, $resume_token);
+            if ($source_path === '') {
+                wp_send_json_error(['message' => 'Erro ao salvar arquivo temporário para transcrição.'], 500);
+            }
+
+            $resume_entry = [
+                'file_path' => $source_path,
+                'file_name' => $name,
+                'resume_state' => [],
+                'processed_parts' => 0,
+                'total_parts' => 0,
+                'created_at' => time(),
+                'updated_at' => time(),
+            ];
+            $this->set_transcribe_resume_state($resume_token, $resume_entry);
         }
 
-        $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
-        $allowed_ext = ['mp3', 'wav', 'm4a', 'ogg', 'mp4', 'mpeg', 'webm', 'mkv'];
-        if (! in_array($ext, $allowed_ext, true)) {
-            wp_send_json_error(['message' => 'Formato não suportado para transcrição.'], 400);
-        }
-        if ($size <= 0) {
-            wp_send_json_error(['message' => 'Arquivo enviado está vazio.'], 400);
-        }
-
-        $tmp_path = wp_tempnam($name !== '' ? $name : 'audio');
-        if (! is_string($tmp_path) || $tmp_path === '') {
-            wp_send_json_error(['message' => 'Não foi possível preparar arquivo temporário.'], 500);
-        }
-        if ($ext !== '' && substr($tmp_path, -strlen('.' . $ext)) !== '.' . $ext) {
-            $tmp_with_ext = $tmp_path . '.' . $ext;
-            @rename($tmp_path, $tmp_with_ext);
-            $tmp_path = $tmp_with_ext;
-        }
-        if (@move_uploaded_file($tmp_name, $tmp_path) !== true) {
-            @unlink($tmp_path);
-            wp_send_json_error(['message' => 'Erro ao salvar arquivo temporário para transcrição.'], 500);
-        }
+        $this->set_transcribe_progress($job_id, [
+            'stage' => 'queued',
+            'percent' => 1,
+            'message' => $is_resume_request
+                ? 'Retomada solicitada. Preparando continuação da transcrição...'
+                : 'Arquivo recebido. Preparando transcrição...',
+            'current' => 0,
+            'total' => 0,
+            'chunk_index' => 0,
+            'chunk_text' => '',
+            'last_chunk_index' => 0,
+            'last_chunk_text' => '',
+            'updated_at' => time(),
+        ]);
 
         $logs = [];
         $outputs = [];
+        $this->set_transcribe_progress($job_id, [
+            'stage' => 'starting',
+            'percent' => 3,
+            'message' => $is_resume_request
+                ? 'Retomando processamento do arquivo...'
+                : 'Iniciando processamento do arquivo...',
+            'current' => 0,
+            'total' => 0,
+            'chunk_index' => 0,
+            'chunk_text' => '',
+            'last_chunk_index' => 0,
+            'last_chunk_text' => '',
+            'updated_at' => time(),
+        ]);
         try {
-            $outputs = PDFW_Ingestor::transcribe_media_outputs($tmp_path, $logs);
+            $progress_cb = function (array $progress) use ($job_id, $resume_token, $source_path, $name, &$resume_entry): void {
+                $stage = sanitize_key((string) ($progress['stage'] ?? 'working'));
+                $percent = max(0, min(100, (int) ($progress['percent'] ?? 0)));
+                $message = sanitize_text_field((string) ($progress['message'] ?? 'Processando...'));
+                $current = max(0, (int) ($progress['current'] ?? 0));
+                $total = max(0, (int) ($progress['total'] ?? 0));
+                $chunk_index = max(0, (int) ($progress['chunk_index'] ?? 0));
+                $chunk_text = trim((string) ($progress['chunk_text'] ?? ''));
+                $last_chunk_index = max(0, (int) ($progress['last_chunk_index'] ?? 0));
+                $last_chunk_text = trim((string) ($progress['last_chunk_text'] ?? ''));
+                if ($chunk_text !== '' && function_exists('mb_substr')) {
+                    $chunk_text = (string) mb_substr($chunk_text, 0, 20000, 'UTF-8');
+                } elseif ($chunk_text !== '') {
+                    $chunk_text = substr($chunk_text, 0, 20000);
+                }
+                if ($last_chunk_text !== '' && function_exists('mb_substr')) {
+                    $last_chunk_text = (string) mb_substr($last_chunk_text, 0, 20000, 'UTF-8');
+                } elseif ($last_chunk_text !== '') {
+                    $last_chunk_text = substr($last_chunk_text, 0, 20000);
+                }
+                $this->set_transcribe_progress($job_id, [
+                    'stage' => $stage,
+                    'percent' => $percent,
+                    'message' => $message,
+                    'current' => $current,
+                    'total' => $total,
+                    'chunk_index' => $chunk_index,
+                    'chunk_text' => $chunk_text,
+                    'last_chunk_index' => $last_chunk_index,
+                    'last_chunk_text' => $last_chunk_text,
+                    'updated_at' => time(),
+                ]);
+
+                $resume_checkpoint = is_array($progress['resume_state'] ?? null) ? $progress['resume_state'] : [];
+                if ($resume_token !== '' && $source_path !== '' && is_file($source_path) && $resume_checkpoint) {
+                    $created_at = (int) ($resume_entry['created_at'] ?? time());
+                    $this->set_transcribe_resume_state($resume_token, [
+                        'file_path' => $source_path,
+                        'file_name' => $name !== '' ? $name : basename($source_path),
+                        'resume_state' => $resume_checkpoint,
+                        'processed_parts' => $current,
+                        'total_parts' => $total,
+                        'created_at' => $created_at,
+                        'updated_at' => time(),
+                    ]);
+                    $resume_entry['resume_state'] = $resume_checkpoint;
+                    $resume_entry['processed_parts'] = $current;
+                    $resume_entry['total_parts'] = $total;
+                }
+            };
+            $outputs = PDFW_Ingestor::transcribe_media_outputs($source_path, $logs, $progress_cb, $resume_state);
         } catch (\Throwable $th) {
             $logs[] = 'Erro interno durante a transcrição.';
             $outputs = [];
-        } finally {
-            @unlink($tmp_path);
+            $this->set_transcribe_progress($job_id, [
+                'stage' => 'error',
+                'percent' => 100,
+                'message' => 'Falha interna durante a transcrição.',
+                'current' => 0,
+                'total' => 0,
+                'chunk_index' => 0,
+                'chunk_text' => '',
+                'last_chunk_index' => 0,
+                'last_chunk_text' => '',
+                'updated_at' => time(),
+            ]);
         }
 
         $text = is_array($outputs) ? (string) ($outputs['text'] ?? '') : '';
         $srt = is_array($outputs) ? (string) ($outputs['srt'] ?? '') : '';
         $vtt = is_array($outputs) ? (string) ($outputs['vtt'] ?? '') : '';
         $lipsync_json = is_array($outputs) ? (string) ($outputs['lipsync_json'] ?? '') : '';
+        $partial = is_array($outputs) ? (bool) ($outputs['partial'] ?? false) : false;
+        $failed_part = is_array($outputs) ? max(0, (int) ($outputs['failed_part'] ?? 0)) : 0;
+        $processed_parts = is_array($outputs) ? max(0, (int) ($outputs['processed_parts'] ?? 0)) : 0;
+        $total_parts = is_array($outputs) ? max(0, (int) ($outputs['total_parts'] ?? 0)) : 0;
+        $resume_state_out = is_array($outputs) && is_array($outputs['resume_state'] ?? null)
+            ? $outputs['resume_state']
+            : [];
+        $resume_next_part = $failed_part > 0 ? $failed_part : ($processed_parts > 0 ? ($processed_parts + 1) : 1);
+        if ($total_parts > 0 && $resume_next_part > ($total_parts + 1)) {
+            $resume_next_part = $total_parts + 1;
+        }
+        $existing_progress = get_transient($this->transcribe_progress_key($job_id));
+        $existing_last_chunk_index = is_array($existing_progress) ? max(0, (int) ($existing_progress['last_chunk_index'] ?? 0)) : 0;
+        $existing_last_chunk_text = is_array($existing_progress) ? trim((string) ($existing_progress['last_chunk_text'] ?? '')) : '';
 
         if (trim($text) === '') {
             $message = 'Falha na transcrição.';
             if ($logs) {
                 $message .= ' ' . implode(' | ', array_map('sanitize_text_field', $logs));
             }
-            wp_send_json_error(['message' => $message], 500);
+            $this->set_transcribe_progress($job_id, [
+                'stage' => 'error',
+                'percent' => 100,
+                'message' => $message,
+                'current' => $processed_parts,
+                'total' => $total_parts,
+                'chunk_index' => 0,
+                'chunk_text' => '',
+                'last_chunk_index' => 0,
+                'last_chunk_text' => '',
+                'updated_at' => time(),
+            ]);
+            if ($resume_token !== '' && $source_path !== '' && is_file($source_path)) {
+                $this->set_transcribe_resume_state($resume_token, [
+                    'file_path' => $source_path,
+                    'file_name' => $name !== '' ? $name : basename($source_path),
+                    'resume_state' => $resume_state_out ?: $resume_state,
+                    'processed_parts' => $processed_parts,
+                    'total_parts' => $total_parts,
+                    'updated_at' => time(),
+                    'created_at' => (int) ($resume_entry['created_at'] ?? time()),
+                ]);
+            }
+            wp_send_json_error([
+                'message' => $message,
+                'resume_token' => $resume_token,
+                'failed_part' => $failed_part,
+                'processed_parts' => $processed_parts,
+                'total_parts' => $total_parts,
+                'resume_next_part' => max(1, $resume_next_part),
+            ], 500);
+        }
+
+        if ($partial) {
+            $this->set_transcribe_progress($job_id, [
+                'stage' => 'partial',
+                'percent' => 97,
+                'message' => "Transcrição parcial disponível ({$processed_parts}/{$total_parts} partes).",
+                'current' => $processed_parts,
+                'total' => $total_parts,
+                'chunk_index' => 0,
+                'chunk_text' => '',
+                'last_chunk_index' => max($existing_last_chunk_index, $processed_parts),
+                'last_chunk_text' => $existing_last_chunk_text,
+                'updated_at' => time(),
+            ]);
+            if ($resume_token !== '' && $source_path !== '' && is_file($source_path)) {
+                $this->set_transcribe_resume_state($resume_token, [
+                    'file_path' => $source_path,
+                    'file_name' => $name !== '' ? $name : basename($source_path),
+                    'resume_state' => $resume_state_out ?: $resume_state,
+                    'processed_parts' => $processed_parts,
+                    'total_parts' => $total_parts,
+                    'updated_at' => time(),
+                    'created_at' => (int) ($resume_entry['created_at'] ?? time()),
+                ]);
+            }
+        } else {
+            $this->set_transcribe_progress($job_id, [
+                'stage' => 'done',
+                'percent' => 100,
+                'message' => 'Transcrição concluída.',
+                'current' => $processed_parts,
+                'total' => $total_parts,
+                'chunk_index' => 0,
+                'chunk_text' => '',
+                'last_chunk_index' => max($existing_last_chunk_index, $processed_parts),
+                'last_chunk_text' => $existing_last_chunk_text,
+                'updated_at' => time(),
+            ]);
+            if ($resume_token !== '') {
+                $this->delete_transcribe_resume_state($resume_token, true);
+            }
         }
 
         wp_send_json_success([
@@ -270,7 +488,61 @@ class PDFW_Admin_Page
             'srt' => $srt,
             'vtt' => $vtt,
             'lipsync_json' => $lipsync_json,
+            'partial' => $partial,
+            'failed_part' => $failed_part,
+            'processed_parts' => $processed_parts,
+            'total_parts' => $total_parts,
+            'job_id' => $job_id,
+            'resume_token' => $partial ? $resume_token : '',
+            'resume_next_part' => $partial ? max(1, $resume_next_part) : 0,
             'logs' => array_values(array_map('sanitize_text_field', $logs)),
+        ]);
+    }
+
+    public function handle_transcribe_progress(): void
+    {
+        if (! current_user_can('manage_options')) {
+            wp_send_json_error(['message' => 'Sem permissão.'], 403);
+        }
+
+        check_ajax_referer('pdfw_import', 'nonce');
+
+        $job_id_raw = isset($_POST['job_id']) ? wp_unslash((string) $_POST['job_id']) : '';
+        $job_id = $this->sanitize_transcribe_job_id($job_id_raw);
+        if ($job_id === '') {
+            wp_send_json_error(['message' => 'Job inválido.'], 400);
+        }
+
+        $progress = get_transient($this->transcribe_progress_key($job_id));
+        if (! is_array($progress)) {
+            wp_send_json_success([
+                'stage' => 'idle',
+                'percent' => 0,
+                'message' => 'Sem progresso ativo para este job.',
+                'current' => 0,
+                'total' => 0,
+                'chunk_index' => 0,
+                'chunk_text' => '',
+                'last_chunk_index' => 0,
+                'last_chunk_text' => '',
+            ]);
+            return;
+        }
+
+        $chunk_text = trim((string) ($progress['chunk_text'] ?? ''));
+        $last_chunk_text = trim((string) ($progress['last_chunk_text'] ?? ''));
+
+        wp_send_json_success([
+            'stage' => sanitize_key((string) ($progress['stage'] ?? 'working')),
+            'percent' => max(0, min(100, (int) ($progress['percent'] ?? 0))),
+            'message' => sanitize_text_field((string) ($progress['message'] ?? 'Processando...')),
+            'current' => max(0, (int) ($progress['current'] ?? 0)),
+            'total' => max(0, (int) ($progress['total'] ?? 0)),
+            'chunk_index' => max(0, (int) ($progress['chunk_index'] ?? 0)),
+            'chunk_text' => $chunk_text,
+            'last_chunk_index' => max(0, (int) ($progress['last_chunk_index'] ?? 0)),
+            'last_chunk_text' => $last_chunk_text,
+            'updated_at' => max(0, (int) ($progress['updated_at'] ?? 0)),
         ]);
     }
 
@@ -580,6 +852,194 @@ class PDFW_Admin_Page
         }
 
         return $clean;
+    }
+
+    private function sanitize_transcribe_job_id(string $value): string
+    {
+        $raw = strtolower(trim($value));
+        if ($raw === '') {
+            return '';
+        }
+
+        $clean = preg_replace('/[^a-z0-9_-]/', '', $raw);
+        if (! is_string($clean) || $clean === '') {
+            return '';
+        }
+
+        return substr($clean, 0, 64);
+    }
+
+    private function sanitize_transcribe_resume_token(string $value): string
+    {
+        $raw = strtolower(trim($value));
+        if ($raw === '') {
+            return '';
+        }
+
+        $clean = preg_replace('/[^a-z0-9_-]/', '', $raw);
+        if (! is_string($clean) || $clean === '') {
+            return '';
+        }
+
+        return substr($clean, 0, 64);
+    }
+
+    private function create_transcribe_resume_token(): string
+    {
+        return 'rsm_' . strtolower(wp_generate_password(16, false, false));
+    }
+
+    private function transcribe_resume_key(string $resume_token): string
+    {
+        return self::TRANSCRIBE_RESUME_PREFIX . $resume_token;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function get_transcribe_resume_state(string $resume_token): array
+    {
+        if ($resume_token === '') {
+            return [];
+        }
+        $state = get_transient($this->transcribe_resume_key($resume_token));
+        return is_array($state) ? $state : [];
+    }
+
+    /**
+     * @param array<string, mixed> $state
+     */
+    private function set_transcribe_resume_state(string $resume_token, array $state): void
+    {
+        if ($resume_token === '') {
+            return;
+        }
+
+        $file_path = $this->normalize_transcribe_source_path((string) ($state['file_path'] ?? ''));
+        if ($file_path === '' || ! is_file($file_path) || ! is_readable($file_path)) {
+            return;
+        }
+
+        $file_name = sanitize_file_name((string) ($state['file_name'] ?? basename($file_path)));
+        if ($file_name === '') {
+            $file_name = basename($file_path);
+        }
+
+        $resume_state = is_array($state['resume_state'] ?? null) ? $state['resume_state'] : [];
+        $processed_parts = max(0, (int) ($state['processed_parts'] ?? 0));
+        $total_parts = max(0, (int) ($state['total_parts'] ?? 0));
+
+        $payload = [
+            'file_path' => $file_path,
+            'file_name' => $file_name,
+            'resume_state' => $resume_state,
+            'processed_parts' => $processed_parts,
+            'total_parts' => $total_parts,
+            'created_at' => max(0, (int) ($state['created_at'] ?? time())),
+            'updated_at' => time(),
+        ];
+
+        set_transient($this->transcribe_resume_key($resume_token), $payload, self::TRANSCRIBE_RESUME_TTL);
+    }
+
+    private function delete_transcribe_resume_state(string $resume_token, bool $delete_file = false): void
+    {
+        if ($resume_token === '') {
+            return;
+        }
+
+        $existing = $this->get_transcribe_resume_state($resume_token);
+        delete_transient($this->transcribe_resume_key($resume_token));
+
+        if (! $delete_file) {
+            return;
+        }
+
+        $file_path = $this->normalize_transcribe_source_path((string) ($existing['file_path'] ?? ''));
+        if ($file_path !== '' && is_file($file_path)) {
+            @unlink($file_path);
+        }
+    }
+
+    private function ensure_transcribe_temp_dir(): string
+    {
+        $uploads = wp_get_upload_dir();
+        $base_dir = wp_normalize_path((string) ($uploads['basedir'] ?? ''));
+        if ($base_dir === '') {
+            return '';
+        }
+
+        $temp_dir = wp_normalize_path(trailingslashit($base_dir) . 'pdfw-temp');
+        if (! is_dir($temp_dir) && ! wp_mkdir_p($temp_dir)) {
+            return '';
+        }
+
+        return $temp_dir;
+    }
+
+    private function normalize_transcribe_source_path(string $path): string
+    {
+        $path = wp_normalize_path(trim($path));
+        if ($path === '') {
+            return '';
+        }
+
+        $temp_dir = $this->ensure_transcribe_temp_dir();
+        if ($temp_dir === '') {
+            return '';
+        }
+
+        $allowed_prefix = trailingslashit($temp_dir);
+        if ($path !== $temp_dir && strpos($path, $allowed_prefix) !== 0) {
+            return '';
+        }
+
+        return $path;
+    }
+
+    private function store_uploaded_transcribe_source(string $tmp_name, string $name, string $ext, string $resume_token): string
+    {
+        $temp_dir = $this->ensure_transcribe_temp_dir();
+        if ($temp_dir === '') {
+            return '';
+        }
+
+        $base = sanitize_file_name((string) pathinfo($name, PATHINFO_FILENAME));
+        if ($base === '') {
+            $base = 'audio';
+        }
+
+        $clean_ext = strtolower(preg_replace('/[^a-z0-9]/', '', $ext));
+        if ($clean_ext === '') {
+            $clean_ext = 'bin';
+        }
+
+        $filename_seed = sprintf('transcribe-%s-%s.%s', substr($resume_token, 0, 16), substr($base, 0, 60), $clean_ext);
+        $filename = wp_unique_filename($temp_dir, $filename_seed);
+        $target_path = wp_normalize_path(trailingslashit($temp_dir) . $filename);
+
+        if (@move_uploaded_file($tmp_name, $target_path) !== true) {
+            return '';
+        }
+
+        return $target_path;
+    }
+
+    private function transcribe_progress_key(string $job_id): string
+    {
+        return self::TRANSCRIBE_PROGRESS_PREFIX . $job_id;
+    }
+
+    /**
+     * @param array<string, mixed> $progress
+     */
+    private function set_transcribe_progress(string $job_id, array $progress): void
+    {
+        if ($job_id === '') {
+            return;
+        }
+
+        set_transient($this->transcribe_progress_key($job_id), $progress, self::TRANSCRIBE_PROGRESS_TTL);
     }
 
     private function sanitize_local_image_source(string $value): string

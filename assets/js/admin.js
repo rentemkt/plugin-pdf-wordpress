@@ -30,11 +30,13 @@
   const transcriptionText = document.getElementById('pdfw-transcription-text');
   const copyTranscribeBtn = document.getElementById('pdfw-copy-transcription');
   const copyTranscribeAllBtn = document.getElementById('pdfw-copy-transcription-all');
+  const resumeTranscribeBtn = document.getElementById('pdfw-resume-transcription');
   const downloadTranscribeTxtBtn = document.getElementById('pdfw-download-transcription-txt');
   const downloadTranscribeSrtBtn = document.getElementById('pdfw-download-transcription-srt');
   const downloadTranscribeVttBtn = document.getElementById('pdfw-download-transcription-vtt');
   const downloadTranscribeLipsyncBtn = document.getElementById('pdfw-download-transcription-lipsync');
   const transcribeLabel = document.getElementById('pdfw-transcribe-label');
+  const transcribeResumeHint = document.getElementById('pdfw-transcribe-resume-hint');
 
   const recipesRawInput = form.querySelector('textarea[name="recipes_raw"]');
   const categoriesRawInput = form.querySelector('textarea[name="categories_raw"]');
@@ -84,6 +86,18 @@
   };
   const importButtonDefaultHtml = importButton ? importButton.innerHTML : 'Importar conteúdo';
   const transcribeDefaultLabelHtml = transcribeLabel ? transcribeLabel.innerHTML : '';
+  const transcribeProgressDefaultHtml = transcribeProgress
+    ? transcribeProgress.innerHTML
+    : '<div class="pdfw-spinner"></div> Processando áudio...';
+  let transcribeProgressTimer = 0;
+  let activeTranscribeJobId = '';
+  let transcribeSeenChunkIndex = 0;
+  let transcribeResumeToken = '';
+  let transcribeResumeNextPart = 0;
+  let transcribeResumeProcessedParts = 0;
+  let transcribeResumeTotalParts = 0;
+  let transcribeResumeFileName = '';
+  let updateLivePreview = () => {};
 
   const sampleRecipes = `Panqueca de Banana
 Ingredientes:
@@ -400,6 +414,237 @@ Finalize com azeite extravirgem após o preparo.`;
 
   const normalizeLine = (value) => String(value || '').trim();
 
+  const PDFW_PREVIEW_THEMES = {
+    'ebook2-classic': {
+      pageBg: '#f7f3ec',
+      heading: '#1a1a2e',
+      accent: '#c27a5a',
+      text: '#2a2a2a',
+      coverBg: '#1a1a2e',
+      coverText: '#ffffff',
+      fontDisplay: "'Merriweather', serif",
+      fontBody: "'Open Sans', sans-serif",
+    },
+    'grafite-dourado': {
+      pageBg: '#f8f6f2',
+      heading: '#24252a',
+      accent: '#c4a95d',
+      text: '#2b2b2b',
+      coverBg: '#24252a',
+      coverText: '#efe3be',
+      fontDisplay: "'Merriweather', serif",
+      fontBody: "'Open Sans', sans-serif",
+    },
+    'azul-mineral': {
+      pageBg: '#f3f7fb',
+      heading: '#204565',
+      accent: '#3b8dbd',
+      text: '#233342',
+      coverBg: '#204565',
+      coverText: '#dbe9f4',
+      fontDisplay: "'Merriweather', serif",
+      fontBody: "'Open Sans', sans-serif",
+    },
+    'terracota-moderna': {
+      pageBg: '#fbf4ef',
+      heading: '#7f3f2f',
+      accent: '#d47652',
+      text: '#3a2c28',
+      coverBg: '#7f3f2f',
+      coverText: '#ffe9df',
+      fontDisplay: "'Merriweather', serif",
+      fontBody: "'Open Sans', sans-serif",
+    },
+    'oliva-areia': {
+      pageBg: '#f6f3e8',
+      heading: '#4d5a3b',
+      accent: '#9b7b4a',
+      text: '#2f3426',
+      coverBg: '#4d5a3b',
+      coverText: '#e6ead7',
+      fontDisplay: "'Merriweather', serif",
+      fontBody: "'Open Sans', sans-serif",
+    },
+  };
+
+  const resolvePreviewTheme = (themeKey) => {
+    const key = normalizeLine(themeKey);
+    if (key && PDFW_PREVIEW_THEMES[key]) {
+      return PDFW_PREVIEW_THEMES[key];
+    }
+    return PDFW_PREVIEW_THEMES['ebook2-classic'];
+  };
+
+  const debounce = (func, wait) => {
+    let timeout = 0;
+    return (...args) => {
+      window.clearTimeout(timeout);
+      timeout = window.setTimeout(() => {
+        func(...args);
+      }, wait);
+    };
+  };
+
+  const collectPayloadForLivePreview = () => {
+    const read = (name) => {
+      const field = form.querySelector(`[name="${name}"]`);
+      return normalizeLine(field?.value || '');
+    };
+    return {
+      title: read('title') || 'Ebook',
+      subtitle: read('subtitle'),
+      author: read('author') || 'Autor',
+      theme: read('theme') || 'ebook2-classic',
+      about: read('about'),
+      tips: read('tips'),
+      cover_image: read('cover_image'),
+    };
+  };
+
+  const buildPreviewHtml = (payload, recipes) => {
+    const theme = resolvePreviewTheme(payload?.theme);
+    const coverImage = normalizeLine(payload?.cover_image || '');
+    const list = Array.isArray(recipes) ? recipes : [];
+    const safeTitle = escapeHtml(payload?.title || 'Ebook');
+    const safeSubtitle = escapeHtml(payload?.subtitle || '');
+    const safeAuthor = escapeHtml(payload?.author || 'Autor');
+
+    const css = `
+      @import url('https://fonts.googleapis.com/css2?family=Merriweather:wght@400;700&family=Open+Sans:wght@400;600;700&display=swap');
+      :root {
+        --page-bg: ${theme.pageBg};
+        --heading: ${theme.heading};
+        --accent: ${theme.accent};
+        --text: ${theme.text};
+        --cover-bg: ${theme.coverBg};
+        --cover-text: ${theme.coverText};
+        --font-display: ${theme.fontDisplay};
+        --font-body: ${theme.fontBody};
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 20px; background: #525659; font-family: var(--font-body); color: var(--text); }
+      .page {
+        width: 148mm; min-height: 210mm; margin: 0 auto 20px;
+        background: var(--page-bg); padding: 15mm 12mm; position: relative;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.28); overflow: hidden;
+      }
+      .cover { background: var(--cover-bg); color: var(--cover-text); display: flex; flex-direction: column; justify-content: center; text-align: center; }
+      .cover h1 { margin: 0 0 8px; font-family: var(--font-display); font-size: 26pt; line-height: 1.15; text-transform: uppercase; letter-spacing: 1.3px; }
+      .cover p { margin: 0; font-size: 13pt; opacity: .9; }
+      .cover .author { margin-top: auto; font-size: 10pt; letter-spacing: .7px; text-transform: uppercase; }
+      .cover-img { width: 100%; height: 250px; object-fit: cover; margin: 18px 0; border-radius: 4px; opacity: .9; }
+      h2, h3 { font-family: var(--font-display); color: var(--heading); }
+      h2 { margin: 0 0 10px; border-bottom: 2px solid var(--accent); padding-bottom: 5px; font-size: 18pt; }
+      .toc-item { display: flex; justify-content: space-between; border-bottom: 1px dotted #c7c7c7; margin-bottom: 7px; padding-bottom: 2px; font-size: 10pt; }
+      .toc-page { color: var(--accent); font-weight: 700; }
+      .meta { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+      .tag { display: inline-block; background: rgba(0,0,0,.05); border-radius: 4px; padding: 2px 8px; font-size: .8em; color: #555; }
+      .desc { margin: 0 0 14px; color: #555; font-style: italic; }
+      .cols { display: flex; gap: 18px; }
+      .col { flex: 1; min-width: 0; }
+      .col h3 { margin: 0 0 7px; font-size: 11pt; text-transform: uppercase; letter-spacing: .4px; color: var(--accent); }
+      ul, ol { margin: 0; padding-left: 18px; font-size: 10pt; line-height: 1.4; }
+      li { margin-bottom: 4px; }
+      .content-body { white-space: pre-wrap; line-height: 1.6; font-size: 10.5pt; text-align: justify; }
+      .tip { margin-top: 14px; border-left: 4px solid var(--accent); background: rgba(0,0,0,.03); padding: 10px 12px; border-radius: 6px; font-size: 9.6pt; }
+      .hero-media { height: 132px; margin: -15mm -12mm 14px; overflow: hidden; background: #ebebeb; }
+      .hero-media img { width: 100%; height: 100%; object-fit: cover; }
+    `;
+
+    let html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>${css}</style></head><body>`;
+    html += `<div class="page cover" id="preview-cover">${coverImage ? `<img class="cover-img" src="${escapeHtml(coverImage)}" alt="">` : ''}<h1>${safeTitle}</h1><p>${safeSubtitle}</p><div class="author">${safeAuthor}</div></div>`;
+
+    if (list.length) {
+      html += '<div class="page"><h2 style="text-align:center">Sumário</h2>';
+      list.forEach((recipe, idx) => {
+        const title = escapeHtml(normalizeLine(recipe?.title || `Item ${idx + 1}`));
+        html += `<div class="toc-item"><span>${idx + 1}. ${title}</span><span class="toc-page">Pg ${idx + 3}</span></div>`;
+      });
+      html += '</div>';
+    }
+
+    list.forEach((recipe, idx) => {
+      const title = escapeHtml(normalizeLine(recipe?.title || `Item ${idx + 1}`));
+      const category = normalizeLine(recipe?.category || '');
+      const tempo = normalizeLine(recipe?.tempo || '');
+      const porcoes = normalizeLine(recipe?.porcoes || '');
+      const dificuldade = normalizeLine(recipe?.dificuldade || '');
+      const image = normalizeLine(recipe?.image || '');
+      const description = normalizeLine(recipe?.description || '');
+      const tip = normalizeLine(recipe?.tip || '');
+      const ingredients = Array.isArray(recipe?.ingredients) ? recipe.ingredients.filter((i) => normalizeLine(i) !== '') : [];
+      const steps = Array.isArray(recipe?.steps) ? recipe.steps.filter((s) => normalizeLine(s) !== '') : [];
+      const isRecipe = ingredients.length > 0 || steps.length > 0;
+
+      html += `<div class="page" id="preview-item-${idx}">`;
+      if (image) {
+        html += `<div class="hero-media"><img src="${escapeHtml(image)}" alt=""></div>`;
+      }
+      html += `<h2>${title}</h2>`;
+      const metas = [];
+      if (category) metas.push(category);
+      if (tempo) metas.push(`⏱ ${tempo}`);
+      if (porcoes) metas.push(`🍽 ${porcoes}`);
+      if (dificuldade) metas.push(`📊 ${dificuldade}`);
+      if (metas.length) {
+        html += `<div class="meta">${metas.map((meta) => `<span class="tag">${escapeHtml(meta)}</span>`).join('')}</div>`;
+      }
+      if (description) {
+        html += `<p class="${isRecipe ? 'desc' : 'content-body'}">${escapeHtml(description).replace(/\n/g, '<br>')}</p>`;
+      }
+
+      if (isRecipe) {
+        html += '<div class="cols"><div class="col"><h3>Ingredientes</h3><ul>';
+        ingredients.forEach((item) => {
+          html += `<li>${escapeHtml(item)}</li>`;
+        });
+        html += '</ul></div><div class="col"><h3>Modo de Preparo</h3><ol>';
+        steps.forEach((step) => {
+          html += `<li>${escapeHtml(step)}</li>`;
+        });
+        html += '</ol></div></div>';
+        if (tip) {
+          html += `<div class="tip"><strong>Dica:</strong> ${escapeHtml(tip)}</div>`;
+        }
+      }
+
+      html += '</div>';
+    });
+
+    const about = normalizeLine(payload?.about || '');
+    const tips = normalizeLine(payload?.tips || '');
+    if (tips || about) {
+      html += '<div class="page">';
+      if (tips) {
+        html += `<h2>Dicas Finais</h2><div class="content-body">${escapeHtml(tips).replace(/\n/g, '<br>')}</div>`;
+      }
+      if (about) {
+        html += `<h2 style="margin-top:20px;">Sobre o Autor</h2><div class="content-body">${escapeHtml(about).replace(/\n/g, '<br>')}</div>`;
+      }
+      html += '</div>';
+    }
+
+    html += '</body></html>';
+    return html;
+  };
+
+  const scrollToPreviewItem = (index) => {
+    if (!previewFrame || !previewFrame.contentWindow) return;
+    const doc = previewFrame.contentWindow.document;
+    if (!doc) return;
+    const target = doc.getElementById(`preview-item-${index}`);
+    if (!target) return;
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  updateLivePreview = debounce(() => {
+    if (!previewFrame) return;
+    const payload = collectPayloadForLivePreview();
+    const html = buildPreviewHtml(payload, recipesState);
+    showHtmlPreview(html);
+    setStatus('Prévia em tempo real atualizada.');
+  }, 220);
+
   const showToast = (message, type = 'info', ttlMs = 4200) => {
     if (!toastContainer) return;
     const text = normalizeLine(message);
@@ -441,6 +686,148 @@ Finalize com azeite extravirgem após o preparo.`;
     if (transcribeInput) {
       transcribeInput.disabled = busy;
     }
+    if (resumeTranscribeBtn) {
+      resumeTranscribeBtn.disabled = busy || !transcribeResumeToken;
+    }
+  };
+
+  const setTranscribeResumeState = (state = null) => {
+    const token = normalizeLine(state?.token || '');
+    const nextPartRaw = Number(state?.nextPart || 0);
+    const processedRaw = Number(state?.processedParts || 0);
+    const totalRaw = Number(state?.totalParts || 0);
+    const fileName = normalizeLine(state?.fileName || '');
+
+    transcribeResumeToken = token;
+    transcribeResumeNextPart = Number.isFinite(nextPartRaw) ? Math.max(0, Math.trunc(nextPartRaw)) : 0;
+    transcribeResumeProcessedParts = Number.isFinite(processedRaw) ? Math.max(0, Math.trunc(processedRaw)) : 0;
+    transcribeResumeTotalParts = Number.isFinite(totalRaw) ? Math.max(0, Math.trunc(totalRaw)) : 0;
+    transcribeResumeFileName = fileName;
+
+    if (resumeTranscribeBtn) {
+      if (token) {
+        const part = transcribeResumeNextPart > 0 ? transcribeResumeNextPart : (transcribeResumeProcessedParts + 1);
+        resumeTranscribeBtn.textContent = `Retomar da parte ${part}`;
+      } else {
+        resumeTranscribeBtn.textContent = 'Retomar da parte falha';
+      }
+      resumeTranscribeBtn.disabled = !token;
+    }
+
+    if (transcribeResumeHint) {
+      if (!token) {
+        transcribeResumeHint.hidden = true;
+        transcribeResumeHint.textContent = '';
+      } else {
+        const part = transcribeResumeNextPart > 0 ? transcribeResumeNextPart : (transcribeResumeProcessedParts + 1);
+        const total = transcribeResumeTotalParts > 0 ? ` de ${transcribeResumeTotalParts}` : '';
+        const fromFile = transcribeResumeFileName ? ` Arquivo: ${transcribeResumeFileName}.` : '';
+        transcribeResumeHint.hidden = false;
+        transcribeResumeHint.textContent = `Retomada disponível na parte ${part}${total}.${fromFile}`;
+      }
+    }
+  };
+
+  const setTranscribeProgressStatus = (message, percent = null, current = 0, total = 0) => {
+    if (!transcribeProgress) return;
+    const msg = normalizeLine(message || 'Processando...');
+    let suffix = '';
+    const pctRaw = Number(percent);
+    if (Number.isFinite(pctRaw)) {
+      suffix += ` (${Math.max(0, Math.min(100, Math.round(pctRaw)))}%)`;
+    }
+    const currentNum = Number(current);
+    const totalNum = Number(total);
+    if (Number.isFinite(currentNum) && Number.isFinite(totalNum) && totalNum > 0) {
+      suffix += ` • ${Math.max(0, Math.trunc(currentNum))}/${Math.max(0, Math.trunc(totalNum))}`;
+    }
+    transcribeProgress.innerHTML = `<div class="pdfw-spinner"></div>${escapeHtml(msg + suffix)}`;
+  };
+
+  const appendChunkPreviewText = (chunkIndex, chunkText) => {
+    const idx = Number(chunkIndex);
+    const text = normalizeLine(chunkText || '');
+    if (!Number.isFinite(idx) || idx <= 0 || idx <= transcribeSeenChunkIndex || !text) {
+      return;
+    }
+
+    transcribeSeenChunkIndex = idx;
+    const current = normalizeLine(transcribeOutputs.txt || '');
+    const next = current ? `${current}\n\n${text}` : text;
+    transcribeOutputs.txt = next;
+    if (transcriptionText) {
+      transcriptionText.value = next;
+      transcriptionText.scrollTop = transcriptionText.scrollHeight;
+    }
+    if (transcribeResult) {
+      transcribeResult.hidden = false;
+    }
+    updateTranscribeActionState();
+  };
+
+  const stopTranscribeProgressPolling = () => {
+    if (transcribeProgressTimer) {
+      window.clearInterval(transcribeProgressTimer);
+      transcribeProgressTimer = 0;
+    }
+    activeTranscribeJobId = '';
+  };
+
+  const pollTranscribeProgress = async () => {
+    if (!activeTranscribeJobId) return;
+
+    const fd = new FormData();
+    fd.set('action', 'pdfw_transcribe_progress');
+    fd.set('nonce', importNonce);
+    fd.set('job_id', activeTranscribeJobId);
+
+    try {
+      const response = await fetch(getAjaxUrl(), {
+        method: 'POST',
+        body: fd,
+        credentials: 'same-origin',
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload || payload.success !== true) return;
+
+      const stage = normalizeLine(payload?.data?.stage || '');
+      const percent = Number(payload?.data?.percent);
+      const message = normalizeLine(payload?.data?.message || 'Processando...');
+      const current = Number(payload?.data?.current || 0);
+      const total = Number(payload?.data?.total || 0);
+      setTranscribeProgressStatus(message, percent, current, total);
+
+      const lastChunkIndex = Number(payload?.data?.last_chunk_index || 0);
+      const lastChunkText = normalizeLine(payload?.data?.last_chunk_text || '');
+      if (Number.isFinite(lastChunkIndex) && lastChunkIndex > 0 && lastChunkText) {
+        appendChunkPreviewText(lastChunkIndex, lastChunkText);
+      } else {
+        const chunkIndex = Number(payload?.data?.chunk_index || 0);
+        const chunkText = normalizeLine(payload?.data?.chunk_text || '');
+        if (Number.isFinite(chunkIndex) && chunkIndex > 0 && chunkText) {
+          appendChunkPreviewText(chunkIndex, chunkText);
+        }
+      }
+
+      if (['done', 'partial', 'error'].includes(stage)) {
+        stopTranscribeProgressPolling();
+      }
+    } catch {
+      // ignora falha de polling para não interromper a transcrição em andamento
+    }
+  };
+
+  const startTranscribeProgressPolling = (jobId, initialSeenChunkIndex = 0) => {
+    stopTranscribeProgressPolling();
+    activeTranscribeJobId = normalizeLine(jobId);
+    if (!activeTranscribeJobId) return;
+    const seed = Number(initialSeenChunkIndex);
+    transcribeSeenChunkIndex = Number.isFinite(seed) ? Math.max(0, Math.trunc(seed)) : 0;
+    setTranscribeProgressStatus('Preparando transcrição...', 2, 0, 0);
+    transcribeProgressTimer = window.setInterval(() => {
+      void pollTranscribeProgress();
+    }, 1500);
+    void pollTranscribeProgress();
   };
 
   const isStandaloneTranscribeFileAllowed = (fileName) => {
@@ -533,16 +920,20 @@ Finalize com azeite extravirgem após o preparo.`;
     if (downloadTranscribeLipsyncBtn) downloadTranscribeLipsyncBtn.disabled = !hasLipsync;
   };
 
-  const resetTranscribeOutputs = () => {
+  const resetTranscribeOutputs = ({ clearResume = false } = {}) => {
     transcribeOutputs = {
       txt: '',
       srt: '',
       vtt: '',
       lipsync: '',
     };
+    transcribeSeenChunkIndex = 0;
 
     if (transcriptionText) {
       transcriptionText.value = '';
+    }
+    if (clearResume) {
+      setTranscribeResumeState(null);
     }
     updateTranscribeActionState();
   };
@@ -609,29 +1000,64 @@ Finalize com azeite extravirgem após o preparo.`;
     URL.revokeObjectURL(url);
   };
 
-  const handleStandaloneTranscription = async (file) => {
-    if (!file) return;
-    if (!isStandaloneTranscribeFileAllowed(file.name)) {
+  const handleStandaloneTranscription = async (file, options = {}) => {
+    const resumeMode = Boolean(options && options.resume);
+    if (!resumeMode && !file) return;
+    if (resumeMode && !transcribeResumeToken) {
+      showToast('Nenhuma transcrição pendente para retomar.', 'warn');
+      return;
+    }
+    if (!resumeMode && file && !isStandaloneTranscribeFileAllowed(file.name)) {
       showToast('Formato não suportado. Use MP3, WAV, M4A, OGG, MP4, MPEG, WEBM ou MKV.', 'error');
       return;
     }
 
-    if (transcribeResult) {
-      transcribeResult.hidden = true;
-    }
-    resetTranscribeOutputs();
+    const sourceName = resumeMode
+      ? (transcribeResumeFileName || 'arquivo anterior')
+      : normalizeLine(file?.name || 'arquivo');
 
-    if (isStandaloneTranscribeVideoFile(file.name)) {
+    if (!resumeMode) {
+      if (transcribeResult) {
+        transcribeResult.hidden = true;
+      }
+      resetTranscribeOutputs({ clearResume: true });
+    }
+
+    const requestResumeToken = resumeMode
+      ? transcribeResumeToken
+      : `rsm_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    if (!resumeMode) {
+      setTranscribeResumeState({
+        token: requestResumeToken,
+        nextPart: 1,
+        processedParts: 0,
+        totalParts: 0,
+        fileName: sourceName,
+      });
+    }
+
+    if (!resumeMode && file && isStandaloneTranscribeVideoFile(file.name)) {
       showToast('Vídeo longo detectado. O processamento pode levar alguns minutos dependendo do tamanho. Por favor, aguarde.', 'info', 7000);
     }
 
-    setTranscribeBusy(true, `Processando: ${file.name}`);
+    const jobId = `job_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const initialSeenChunk = resumeMode ? Math.max(0, transcribeResumeProcessedParts) : 0;
+    setTranscribeBusy(
+      true,
+      resumeMode ? `Retomando transcrição: ${sourceName}` : `Processando: ${sourceName}`,
+    );
+    startTranscribeProgressPolling(jobId, initialSeenChunk);
 
     try {
       const fd = new FormData();
       fd.set('action', 'pdfw_standalone_transcribe');
       fd.set('nonce', importNonce);
-      fd.set('audio_file', file);
+      fd.set('job_id', jobId);
+      fd.set('resume_token', requestResumeToken);
+      if (!resumeMode && file) {
+        fd.set('audio_file', file);
+      }
       if (whisperUrlInput && normalizeLine(whisperUrlInput.value || '')) {
         fd.set('whisper_url', whisperUrlInput.value);
       }
@@ -650,11 +1076,28 @@ Finalize com azeite extravirgem após o preparo.`;
       }
 
       if (!response.ok || !payload || payload.success !== true) {
+        const errorResumeToken = normalizeLine(payload?.data?.resume_token || '');
+        const errorProcessed = Number(payload?.data?.processed_parts || transcribeResumeProcessedParts || 0);
+        const errorTotal = Number(payload?.data?.total_parts || transcribeResumeTotalParts || 0);
+        const errorFailedPart = Number(payload?.data?.resume_next_part || payload?.data?.failed_part || 0);
+        if (errorResumeToken) {
+          setTranscribeResumeState({
+            token: errorResumeToken,
+            nextPart: errorFailedPart > 0 ? errorFailedPart : (errorProcessed + 1),
+            processedParts: errorProcessed,
+            totalParts: errorTotal,
+            fileName: sourceName,
+          });
+          if (transcribeResult) {
+            transcribeResult.hidden = false;
+          }
+        }
         throw new Error(extractError(payload, 'Falha na transcrição.'));
       }
 
       const text = normalizeLine(payload?.data?.text || '');
-      if (!text) {
+      const partial = Boolean(payload?.data?.partial);
+      if (!text && !partial) {
         throw new Error('A API respondeu sem texto transcrito.');
       }
 
@@ -662,12 +1105,42 @@ Finalize com azeite extravirgem após o preparo.`;
       if (transcribeResult) {
         transcribeResult.hidden = false;
       }
-      showToast('Transcrição concluída com sucesso.', 'success');
+
+      const processedParts = Number(payload?.data?.processed_parts || 0);
+      const totalParts = Number(payload?.data?.total_parts || 0);
+      const failedPart = Number(payload?.data?.failed_part || 0);
+      const resumeToken = normalizeLine(payload?.data?.resume_token || '');
+      const resumeNextPartRaw = Number(payload?.data?.resume_next_part || 0);
+      const resumeNextPart = Number.isFinite(resumeNextPartRaw) && resumeNextPartRaw > 0
+        ? Math.trunc(resumeNextPartRaw)
+        : (failedPart > 0 ? failedPart : (processedParts + 1));
+
+      if (partial) {
+        setTranscribeResumeState({
+          token: resumeToken || transcribeResumeToken,
+          nextPart: resumeNextPart,
+          processedParts,
+          totalParts,
+          fileName: sourceName,
+        });
+        showToast(
+          `Transcrição parcial agregada (${processedParts}/${totalParts}). Clique em "Retomar da parte ${resumeNextPart}" para continuar.`,
+          'warn',
+          9000,
+        );
+      } else {
+        setTranscribeResumeState(null);
+        showToast('Transcrição concluída com sucesso.', 'success');
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Erro ao transcrever arquivo.';
       showToast(message, 'error');
     } finally {
+      stopTranscribeProgressPolling();
       setTranscribeBusy(false, 'Clique ou arraste um arquivo aqui\n(MP3, WAV, M4A, OGG, MP4, MPEG, WEBM, MKV)');
+      if (transcribeProgress) {
+        transcribeProgress.innerHTML = transcribeProgressDefaultHtml;
+      }
       if (transcribeLabel && transcribeDefaultLabelHtml) {
         transcribeLabel.innerHTML = transcribeDefaultLabelHtml;
       }
@@ -1408,6 +1881,7 @@ Finalize com azeite extravirgem após o preparo.`;
     rebuildCategoriesFromRecipes();
     renderCategoryManager();
     renderRecipeBuilder();
+    updateLivePreview();
   };
 
   const addRecipe = () => {
@@ -1463,12 +1937,17 @@ Finalize com azeite extravirgem após o preparo.`;
 
     const field = target.getAttribute('data-field');
     if (!field) return;
+    const wasGeneric = Boolean(recipesState[index]?.isGeneric);
+    let requiresFullRender = false;
+    let requiresCategoryRefresh = false;
 
     if (field === 'title') {
       recipesState[index].title = target.value;
     } else if (field === 'category') {
       const nextCategory = normalizeCategoryName(target.value);
       recipesState[index].category = nextCategory || (categoriesState[0]?.name || 'Itens');
+      requiresFullRender = true;
+      requiresCategoryRefresh = true;
     } else if (field === 'description') {
       recipesState[index].description = target.value;
     } else if (field === 'tempo') {
@@ -1506,12 +1985,33 @@ Finalize com azeite extravirgem após o preparo.`;
       || normalizeLine(current.dificuldade) !== ''
       || hasNutrition;
     recipesState[index].isGeneric = !hasRecipeData;
+    if (wasGeneric !== recipesState[index].isGeneric) {
+      requiresFullRender = true;
+      requiresCategoryRefresh = true;
+    }
 
-    rebuildCategoriesFromRecipes();
+    if (requiresCategoryRefresh) {
+      rebuildCategoriesFromRecipes();
+    }
     syncRawFromRecipes();
-    renderCategoryManager();
-    renderRecipeBuilder();
+
+    if (requiresFullRender) {
+      renderCategoryManager();
+      renderRecipeBuilder();
+    } else {
+      if (field === 'title') {
+        const nameEl = card.querySelector('.pdfw-recipe-name');
+        if (nameEl) {
+          const label = normalizeLine(recipesState[index].title || '') || 'Item sem título';
+          const mode = recipesState[index].isGeneric ? 'Texto' : 'Receita';
+          nameEl.innerHTML = `${escapeHtml(label)} <small>(${escapeHtml(mode)})</small>`;
+        }
+      }
+      updateSidebarMeta();
+    }
+
     markDirty();
+    scrollToPreviewItem(index);
   };
 
   const handleRecipeBuilderClick = (event) => {
@@ -1519,7 +2019,15 @@ Finalize com azeite extravirgem após o preparo.`;
     if (!(target instanceof HTMLElement)) return;
 
     const button = target.closest('button[data-action]');
-    if (!button) return;
+    if (!button) {
+      const focusCard = target.closest('.pdfw-recipe-card');
+      if (!focusCard) return;
+      const focusIndex = Number(focusCard.getAttribute('data-index'));
+      if (Number.isFinite(focusIndex)) {
+        scrollToPreviewItem(focusIndex);
+      }
+      return;
+    }
 
     const card = button.closest('.pdfw-recipe-card');
     if (!card) return;
@@ -1740,7 +2248,7 @@ Finalize com azeite extravirgem após o preparo.`;
       previewCacheInput.value = '';
     }
     if (previewStatus) {
-      previewStatus.textContent = 'Alterações detectadas. Gere a prévia novamente.';
+      previewStatus.textContent = 'Alterações detectadas. Atualizando prévia em tempo real...';
     }
 
     projectDirty = true;
@@ -1750,6 +2258,7 @@ Finalize com azeite extravirgem após o preparo.`;
       setProjectStatus('Projeto não salvo.', 'warn');
     }
     updateSidebarMeta();
+    updateLivePreview();
   };
 
   const showPdfPreview = (pdfBase64) => {
@@ -2388,6 +2897,7 @@ Finalize com azeite extravirgem após o preparo.`;
     }
     renderImportAudit([], null, false);
     resetPreviewPanel();
+    updateLivePreview();
     renderProjectDashboard(projectsCache);
     clearProjectCardSelection();
     if (!silentToast) {
@@ -2507,6 +3017,13 @@ Finalize com azeite extravirgem após o preparo.`;
     });
   }
 
+  if (resumeTranscribeBtn) {
+    resumeTranscribeBtn.addEventListener('click', async (event) => {
+      event.preventDefault();
+      await handleStandaloneTranscription(null, { resume: true });
+    });
+  }
+
   if (downloadTranscribeTxtBtn) {
     downloadTranscribeTxtBtn.addEventListener('click', (event) => {
       event.preventDefault();
@@ -2563,7 +3080,10 @@ Finalize com azeite extravirgem após o preparo.`;
   if (previewHtmlButton) {
     previewHtmlButton.addEventListener('click', (event) => {
       event.preventDefault();
-      generatePreview('html');
+      activateSection('exportar');
+      updateLivePreview();
+      setLog('');
+      showToast('Prévia HTML local atualizada.', 'info', 1800);
     });
   }
 
@@ -2646,7 +3166,7 @@ Finalize com azeite extravirgem após o preparo.`;
   const bootstrap = async () => {
     syncRecipesFromRaw();
     initialPayload = collectFormPayload();
-    resetTranscribeOutputs();
+    resetTranscribeOutputs({ clearResume: true });
     setImportStatus('Cole o link do Drive ou selecione arquivos e clique em Importar conteúdo.', 'idle');
     hideImportProgress();
     renderImportAudit([], null, false);
