@@ -7,9 +7,12 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - WHISPER_MODEL=medium
+      - WHISPER_MODEL=Zoont/faster-whisper-large-v3-turbo-int8-ct2
       - WHISPER_COMPUTE_TYPE=int8
       - WHISPER_DEVICE=cpu
+      - GRADIO_ANALYTICS_ENABLED=false
+      - HF_HUB_DISABLE_TELEMETRY=1
+      - DO_NOT_TRACK=1
     volumes:
       - whisper_models:/root/.cache/huggingface
 volumes:

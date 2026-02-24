@@ -20,9 +20,9 @@ class PDFW_Renderer
     public static function default_payload(): array
     {
         return [
-            'title' => 'Ebook de Receitas',
-            'subtitle' => 'Versão automática',
-            'author' => 'Daniel Cady',
+            'title' => 'Ebook Educacional',
+            'subtitle' => '',
+            'author' => '',
             'seal' => 'Material exclusivo do curso {title} desenvolvido por {author}',
             'theme' => 'ebook2-classic',
             'drive_folder_url' => '',
@@ -30,15 +30,12 @@ class PDFW_Renderer
             'import_mode' => 'append',
             'categories_raw' => self::sample_categories_raw(),
             'tips' => implode("\n", [
-                'Monte um planejamento semanal de refeições.',
-                'Prefira ingredientes frescos e minimamente processados.',
-                'Ajuste porções conforme sua rotina e orientação profissional.',
+                'Revise os pontos-chave ao final de cada módulo.',
+                'Anote dúvidas durante a leitura para revisão posterior.',
+                'Aplique os conceitos em situações práticas do seu dia a dia.',
             ]),
-            'about' => implode("\n\n", [
-                'Daniel Cady é bacharel em Nutrição há mais de 15 anos e fundador do Protocolo Reset.',
-                'Ao longo da carreira, acompanhou pessoas a recuperarem saúde, disposição e qualidade de vida sem terrorismo alimentar.',
-            ]),
-            'recipes_raw' => self::sample_recipes_raw(),
+            'about' => '',
+            'recipes_raw' => self::sample_items_raw(),
         ];
     }
 
@@ -54,13 +51,13 @@ class PDFW_Renderer
             ? $recipes_override
             : self::parse_recipes((string) ($payload['recipes_raw'] ?? ''));
         if (! $recipes) {
-            $recipes = self::parse_recipes(self::sample_recipes_raw());
+            $recipes = self::parse_recipes(self::sample_items_raw());
         }
 
         $categories = self::categorize_recipes($recipes, (string) ($payload['categories_raw'] ?? ''));
 
-        $title_raw = (string) ($payload['title'] ?? 'Ebook de Receitas');
-        $subtitle_raw = (string) ($payload['subtitle'] ?? 'Receitas práticas');
+        $title_raw = (string) ($payload['title'] ?? 'Ebook Educacional');
+        $subtitle_raw = (string) ($payload['subtitle'] ?? '');
         $author_raw = (string) ($payload['author'] ?? 'Autor');
 
         $title = self::h($title_raw);
@@ -90,13 +87,13 @@ class PDFW_Renderer
             $quick_list_html .= '<li>' . self::h($tip) . '</li>';
         }
         if ($quick_list_html === '') {
-            $quick_list_html = '<li>Inclua frutas, castanhas e fontes de proteína para maior saciedade.</li>';
+            $quick_list_html = '<li>Revise os pontos-chave ao final de cada módulo.</li>';
         }
 
         $toc_html = '';
         $toc_html .= '<div class="toc-category">Abertura</div>';
-        $toc_html .= '<div class="toc-entry"><span class="toc-name">Observação</span><span class="toc-dots"></span><span class="toc-page">3</span></div>';
-        $toc_html .= '<div class="toc-entry"><span class="toc-name">Sugestões de Lanches</span><span class="toc-dots"></span><span class="toc-page">4</span></div>';
+        $toc_html .= '<div class="toc-entry"><span class="toc-name">Apresentação</span><span class="toc-dots"></span><span class="toc-page">3</span></div>';
+        $toc_html .= '<div class="toc-entry"><span class="toc-name">Destaques</span><span class="toc-dots"></span><span class="toc-page">4</span></div>';
 
         $page_cursor = 5;
         $global_index = 1;
@@ -106,7 +103,7 @@ class PDFW_Renderer
             foreach ($category['recipes'] as $recipe) {
                 $is_generic = ! empty($recipe['is_generic']) || ! empty($recipe['isGeneric']);
                 $toc_html .= '<div class="toc-entry"><span class="toc-name">'
-                    . self::h($global_index . '. ' . (string) ($recipe['title'] ?? 'Receita'))
+                    . self::h($global_index . '. ' . (string) ($recipe['title'] ?? 'Item'))
                     . '</span><span class="toc-dots"></span><span class="toc-page">'
                     . $page_cursor
                     . '</span></div>';
@@ -136,41 +133,97 @@ class PDFW_Renderer
                 . '</div>';
 
             foreach ($category['recipes'] as $recipe) {
-                $recipe_title_raw = (string) ($recipe['title'] ?? 'Receita');
+                $recipe_title_raw = (string) ($recipe['title'] ?? 'Item');
                 $recipe_title = self::h($recipe_title_raw);
                 $is_generic = ! empty($recipe['is_generic']) || ! empty($recipe['isGeneric']);
 
                 if ($is_generic) {
-                    $description_source = trim((string) ($recipe['description'] ?? ''));
-                    if ($description_source === '') {
-                        $description_source = self::recipe_description($recipe_title_raw, '');
-                    }
-
-                    $generic_paragraphs = self::paragraphs($description_source);
-                    if (! $generic_paragraphs) {
-                        $generic_paragraphs = [$description_source];
-                    }
-
-                    $generic_body_html = '';
-                    foreach ($generic_paragraphs as $paragraph) {
-                        $generic_body_html .= '<p>' . self::h($paragraph) . '</p>';
-                    }
-
+                    $edu_description = trim((string) ($recipe['description'] ?? ''));
+                    $edu_body_raw = trim((string) ($recipe['body'] ?? ''));
+                    $edu_duration = trim((string) ($recipe['duration'] ?? ''));
+                    $edu_level = trim((string) ($recipe['level'] ?? ''));
+                    $edu_summary = trim((string) ($recipe['summary'] ?? ''));
+                    $edu_key_points = is_array($recipe['keyPoints'] ?? null) ? $recipe['keyPoints'] : [];
                     $tip_raw = trim((string) ($recipe['tip'] ?? ''));
                     $category_label = trim((string) ($recipe['category'] ?? ''));
                     $image_src_raw = trim((string) ($recipe['image'] ?? ''));
-                    $generic_media_html = '';
+
+                    // Hero image
+                    $edu_media_html = '';
                     $image_src = self::normalize_image_src_for_output($image_src_raw);
                     if ($image_src !== '') {
-                        $generic_media_html = '<div class="generic-media"><img src="' . self::h($image_src) . '" alt="' . $recipe_title . '"></div>';
+                        $edu_media_html = '<div class="edu-hero-media"><img src="' . self::h($image_src) . '" alt="' . $recipe_title . '"></div>';
                     }
 
-                    $recipe_sections_html .= '<div class="generic-content-page">'
-                        . $generic_media_html
+                    // Meta bar (duration + level)
+                    $edu_meta_html = '';
+                    if ($edu_duration !== '' || $edu_level !== '') {
+                        $edu_meta_html = '<div class="edu-meta">';
+                        if ($edu_duration !== '') {
+                            $edu_meta_html .= '<div class="edu-meta-item">Duração: ' . self::h($edu_duration) . '</div>';
+                        }
+                        if ($edu_level !== '') {
+                            $edu_meta_html .= '<div class="edu-meta-item">Nível: ' . self::h($edu_level) . '</div>';
+                        }
+                        $edu_meta_html .= '</div>';
+                    }
+
+                    // Description (short summary in italics)
+                    $edu_desc_html = '';
+                    if ($edu_description !== '') {
+                        $edu_desc_html = '<p class="edu-description">' . self::h($edu_description) . '</p>';
+                    }
+
+                    // Body content with markdown-light rendering
+                    $edu_body_html = '';
+                    $body_source = $edu_body_raw !== '' ? $edu_body_raw : ($edu_description !== '' ? '' : (string) ($recipe['description'] ?? ''));
+                    if ($body_source !== '') {
+                        $edu_body_html = '<div class="edu-body">' . self::render_educational_body($body_source) . '</div>';
+                    }
+
+                    // Key points
+                    $edu_kp_html = '';
+                    if ($edu_key_points) {
+                        $kp_items = '';
+                        foreach ($edu_key_points as $kp) {
+                            $kp_text = trim((string) $kp);
+                            if ($kp_text !== '') {
+                                $kp_items .= '<li>' . self::h($kp_text) . '</li>';
+                            }
+                        }
+                        if ($kp_items !== '') {
+                            $edu_kp_html = '<div class="edu-keypoints">'
+                                . '<div class="edu-keypoints-title">Pontos-chave</div>'
+                                . '<ul>' . $kp_items . '</ul>'
+                                . '</div>';
+                        }
+                    }
+
+                    // Summary
+                    $edu_summary_html = '';
+                    if ($edu_summary !== '') {
+                        $edu_summary_html = '<div class="edu-summary">'
+                            . '<div class="edu-summary-title">Resumo</div>'
+                            . '<p>' . self::h($edu_summary) . '</p>'
+                            . '</div>';
+                    }
+
+                    // Tip / author note
+                    $edu_note_html = '';
+                    if ($tip_raw !== '') {
+                        $edu_note_html = '<div class="edu-note"><strong>Nota:</strong> ' . self::h($tip_raw) . '</div>';
+                    }
+
+                    $recipe_sections_html .= '<div class="edu-content-page">'
+                        . $edu_media_html
                         . '<h2><span class="recipe-badge">' . $global_index . '</span> ' . $recipe_title . '</h2>'
-                        . ($category_label !== '' ? '<div class="generic-category">' . self::h($category_label) . '</div>' : '')
-                        . '<div class="generic-body">' . $generic_body_html . '</div>'
-                        . ($tip_raw !== '' ? '<div class="generic-tip"><strong>Nota do Daniel:</strong> ' . self::h($tip_raw) . '</div>' : '')
+                        . ($category_label !== '' ? '<div class="edu-category">' . self::h($category_label) . '</div>' : '')
+                        . $edu_meta_html
+                        . $edu_desc_html
+                        . $edu_body_html
+                        . $edu_kp_html
+                        . $edu_summary_html
+                        . $edu_note_html
                         . '</div>';
 
                     $global_index++;
@@ -215,7 +268,7 @@ class PDFW_Renderer
                     . '<div class="col-ing"><h3>Ingredientes</h3><ul>' . $ingredients_html . '</ul></div>'
                     . '<div class="col-step"><h3>Modo de preparo</h3><ol>' . $steps_html . '</ol></div>'
                     . '</div>'
-                    . '<div class="tip-box"><div class="tip-title">Dica do Daniel</div><p>' . self::h($tip_raw) . '</p></div>'
+                    . '<div class="tip-box"><div class="tip-title">Dica do Autor</div><p>' . self::h($tip_raw) . '</p></div>'
                     . '<div class="nutri-box">'
                     . '<div class="nutri-title">Informação Nutricional (por porção aprox.)</div>'
                     . '<div class="nutri-grid">'
@@ -353,13 +406,26 @@ html,body { font-family:'Noto Sans','Calibri',sans-serif; font-size:10.5pt; line
 .nutri-item{flex:1;min-width:18mm;text-align:center;}
 .nutri-value{font-size:10.8pt;color:var(--accent);font-weight:700;display:block;}
 .nutri-label{font-size:7pt;color:#666;text-transform:uppercase;}
-.generic-content-page{page-break-before:always;font-size:10pt;line-height:1.62;}
-.generic-media{width:calc(100% + 24mm);height:84mm;margin:-15mm -12mm 6mm -12mm;overflow:hidden;}
-.generic-media img{width:100%;height:100%;object-fit:cover;display:block;}
-.generic-content-page h2{font-family:'Georgia','Noto Serif',serif;font-size:15pt;line-height:1.25;color:var(--heading);margin-bottom:1.8mm;}
-.generic-category{display:inline-block;margin-bottom:3mm;background:#f3e8d8;border:1px solid #e7d3c3;border-radius:99px;padding:1mm 3mm;font-size:8.6pt;color:#6b4d32;text-transform:uppercase;letter-spacing:.5pt;}
-.generic-body p{margin-bottom:3mm;text-align:justify;color:#373737;}
-.generic-tip{margin-top:3.4mm;background:#fff8f0;border:1px solid #e8d8c7;border-radius:7px;padding:2.6mm 3mm;font-size:9pt;color:#4a3a2f;line-height:1.52;}
+.edu-content-page{page-break-before:always;font-size:10pt;line-height:1.62;}
+.edu-hero-media{width:calc(100% + 24mm);height:72mm;margin:-15mm -12mm 5mm -12mm;overflow:hidden;}
+.edu-hero-media img{width:100%;height:100%;object-fit:cover;display:block;}
+.edu-content-page h2{font-family:'Georgia','Noto Serif',serif;font-size:15pt;color:var(--heading);margin-bottom:2mm;}
+.edu-category{display:inline-block;background:var(--card-bg);border:1px solid var(--card-border);border-radius:99px;padding:1mm 3.5mm;font-size:8.4pt;text-transform:uppercase;letter-spacing:.5pt;margin-bottom:2.5mm;}
+.edu-meta{display:flex;gap:4mm;margin-bottom:3mm;font-size:9pt;color:var(--muted);}
+.edu-meta-item{background:var(--card-bg);border:1px solid var(--card-border);border-radius:4px;padding:1.2mm 2.8mm;}
+.edu-description{border-left:3px solid var(--accent);padding-left:3mm;font-style:italic;font-size:9.6pt;color:#555;margin-bottom:3mm;}
+.edu-body p{margin-bottom:2.8mm;text-align:justify;color:#373737;}
+.edu-subheading{font-family:'Georgia','Noto Serif',serif;font-size:11pt;color:var(--heading);margin:4mm 0 2mm;border-bottom:1px solid var(--accent);padding-bottom:1mm;}
+.edu-quote{border-left:3px solid var(--accent);padding:2mm 3mm;margin:3mm 0;background:var(--card-bg);font-style:italic;color:#555;}
+.edu-keypoints{margin-top:3.5mm;background:var(--tip-bg);color:#fff;border-radius:8px;padding:3mm 4mm;page-break-inside:avoid;}
+.edu-keypoints-title{color:var(--divider-sub);text-transform:uppercase;font-weight:700;font-size:8.4pt;letter-spacing:.5pt;margin-bottom:1.5mm;}
+.edu-keypoints ul{list-style:none;padding:0;}
+.edu-keypoints li{font-size:9pt;line-height:1.5;padding-left:4mm;position:relative;margin-bottom:1mm;}
+.edu-keypoints li::before{content:"\2713";position:absolute;left:0;color:var(--divider-sub);}
+.edu-summary{margin-top:3mm;border:1px solid var(--accent);border-radius:6px;padding:2.5mm 3mm;background:var(--card-bg);page-break-inside:avoid;}
+.edu-summary-title{font-size:8pt;text-transform:uppercase;font-weight:700;margin-bottom:1.2mm;color:var(--heading);}
+.edu-summary p{font-size:9.4pt;line-height:1.5;color:#444;}
+.edu-note{margin-top:2.5mm;background:#fff8f0;border:1px solid #e8d8c7;border-radius:7px;padding:2.4mm 3mm;font-size:9pt;color:#4a3a2f;line-height:1.52;}
 .tip-item{display:flex;gap:3mm;margin-bottom:4mm;}
 .tip-num{width:8mm;height:8mm;min-width:8mm;border-radius:50%;background:var(--heading);color:#fff;font-weight:700;text-align:center;line-height:8mm;}
 .tip-content h3{font-size:9.8pt;color:var(--heading);margin-bottom:.8mm;}
@@ -387,19 +453,19 @@ html,body { font-family:'Noto Sans','Calibri',sans-serif; font-size:10.5pt; line
 </div>
 
 <div class="intro">
-  <h1>Observação</h1>
+  <h1>Apresentação</h1>
   <div class="intro-line"></div>
-  <p>{$title}</p>
-  <p>Existem dias em que não é possível realizar uma refeição completa no horário habitual. Em outras situações, algumas pessoas simplesmente preferem algo mais leve nesse período.</p>
-  <p>Nesses momentos, fazer boas escolhas é fundamental para manter a glicemia estável, evitar picos de açúcar no sangue e promover saciedade com equilíbrio nutricional.</p>
-  <p>As opções a seguir foram selecionadas com foco em praticidade, controle glicêmico e qualidade nutricional, priorizando alimentos que auxiliam no controle da fome e oferecem melhor resposta metabólica.</p>
+  <p><strong>{$title}</strong></p>
+  <p>Este material foi desenvolvido para servir como guia de estudo e aprofundamento nos temas abordados ao longo do curso.</p>
+  <p>Cada módulo apresenta conceitos, reflexões e exercícios práticos que auxiliam no processo de aprendizado e transformação pessoal.</p>
+  <p>Recomendamos que você avance no seu ritmo, revisitando os conteúdos sempre que necessário e anotando suas percepções ao longo do caminho.</p>
 </div>
 
 <div class="quick-options">
-  <h1>Sugestões de Lanches</h1>
+  <h1>Destaques</h1>
   <div class="quick-line"></div>
   <div class="quick-card">
-    <h3>Sugestões rápidas</h3>
+    <h3>Dicas de estudo</h3>
     <ul>{$quick_list_html}</ul>
   </div>
 </div>
@@ -575,52 +641,57 @@ HTML;
     private static function sample_categories_raw(): string
     {
         $categories = [
-            ['name' => 'Sopas & Caldos', 'subtitle' => 'Receitas quentes para refeições equilibradas.', 'image' => ''],
-            ['name' => 'Saladas & Molhos', 'subtitle' => 'Combinações leves e cheias de sabor.', 'image' => ''],
-            ['name' => 'Peixes & Frutos do Mar', 'subtitle' => 'Opções com proteína magra e preparo simples.', 'image' => ''],
-            ['name' => 'Carnes & Assados', 'subtitle' => 'Pratos principais para o dia a dia.', 'image' => ''],
-            ['name' => 'Massas & Grãos', 'subtitle' => 'Energia e saciedade com bons ingredientes.', 'image' => ''],
+            ['name' => 'Módulo 1 — Fundamentos', 'subtitle' => 'Conceitos essenciais para iniciar.', 'image' => ''],
+            ['name' => 'Módulo 2 — Aprofundamento', 'subtitle' => 'Técnicas e práticas avançadas.', 'image' => ''],
+            ['name' => 'Módulo 3 — Aplicação', 'subtitle' => 'Exercícios e estudos de caso.', 'image' => ''],
         ];
 
         $json = wp_json_encode($categories, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
         return is_string($json) ? $json : '';
     }
 
-    private static function sample_recipes_raw(): string
+    private static function sample_items_raw(): string
     {
         return implode("\n", [
-            'Panqueca de Banana',
-            'Ingredientes:',
-            '- 1 banana madura',
-            '- 1 ovo',
-            '- Canela a gosto',
-            'Modo de preparo:',
-            '1. Amasse a banana e misture com o ovo.',
-            '2. Leve à frigideira antiaderente em fogo baixo.',
-            '3. Doure dos dois lados e finalize com canela.',
-            'Dica:',
-            'Sirva com iogurte natural para aumentar proteínas.',
+            'Introdução ao Tema',
+            'Descrição: Nesta aula, apresentamos os conceitos fundamentais do curso.',
+            'Duração: 45 min',
+            'Nível: Iniciante',
+            'Categoria: Módulo 1 — Fundamentos',
+            '',
+            'Nesta primeira aula, abordaremos os pilares essenciais que servirão de base para todo o curso.',
+            '',
+            'Pontos-chave:',
+            '- Conceito fundamental A',
+            '- Conceito fundamental B',
+            '- Relação entre teoria e prática',
+            '',
+            'Resumo: Esta aula estabeleceu as bases conceituais necessárias para avançar nos módulos seguintes.',
             '',
             '---',
             '',
-            'Omelete com Legumes',
-            'Ingredientes:',
-            '- 2 ovos',
-            '- 1/2 tomate picado',
-            '- 2 colheres de espinafre picado',
-            '- Sal e pimenta a gosto',
-            'Modo de preparo:',
-            '1. Bata os ovos e adicione os legumes.',
-            '2. Tempere e cozinhe em frigideira antiaderente.',
-            '3. Dobre a omelete quando estiver firme.',
-            'Dica:',
-            'Finalize com azeite extravirgem após o preparo.',
+            'Estudo de Caso Prático',
+            'Descrição: Análise de um caso real aplicando os conceitos do módulo anterior.',
+            'Duração: 30 min',
+            'Nível: Intermediário',
+            'Categoria: Módulo 2 — Aprofundamento',
+            '',
+            'Neste estudo de caso, aplicamos os conceitos aprendidos a uma situação prática do cotidiano.',
+            '',
+            'Pontos-chave:',
+            '- Identificação do problema',
+            '- Aplicação da técnica',
+            '- Resultado esperado',
+            '',
+            'Resumo: A prática mostrou como os conceitos se aplicam em contextos reais.',
         ]);
     }
 
     private static function parse_recipes(string $raw): array
     {
         $raw = trim(str_replace("\r\n", "\n", $raw));
+        // Strip BOM and invisible characters that break header detection
+        $raw = preg_replace('/[\x{FEFF}\x{200B}\x{200C}\x{200D}\x{00AD}]/u', '', $raw) ?? $raw;
         if ($raw === '') {
             return [];
         }
@@ -649,6 +720,11 @@ HTML;
             $dificuldade = '';
             $image = '';
             $has_recipe_marker = false;
+            $duration = '';
+            $level = '';
+            $key_points = [];
+            $summary = '';
+            $body_lines = [];
             $nutrition = [
                 'kcal' => '',
                 'carb' => '',
@@ -698,12 +774,35 @@ HTML;
                     $image = trim((string) ($match[1] ?? ''));
                     continue;
                 }
+                // Educational headers
+                if (preg_match('/^dura(?:c|ç)(?:a|ã)o\\s*:?\\s*(.+)$/iu', $line, $match) === 1) {
+                    $duration = trim((string) ($match[1] ?? ''));
+                    continue;
+                }
+                if (preg_match('/^n(?:i|í)vel\\s*:?\\s*(.+)$/iu', $line, $match) === 1) {
+                    $level = trim((string) ($match[1] ?? ''));
+                    continue;
+                }
+                if (preg_match('/^pontos?[- ]chave\\s*:?\\s*(.*)$/iu', $line, $match) === 1) {
+                    $section = 'keypoints';
+                    $kp = trim((string) ($match[1] ?? ''));
+                    if ($kp !== '') {
+                        $key_points[] = $kp;
+                    }
+                    continue;
+                }
+                if (preg_match('/^resumo\\s*:?\\s*(.+)$/iu', $line, $match) === 1) {
+                    $summary = trim((string) ($match[1] ?? ''));
+                    $section = 'summary';
+                    continue;
+                }
+
                 if (preg_match('/^ingredientes?(?:\\s*[:\\-].*)?$/iu', $line) === 1) {
                     $section = 'ingredients';
                     $has_recipe_marker = true;
                     continue;
                 }
-                if (preg_match('/^(modo\\s+de\\s+preparo|modo\\s+de\\s+fazer|preparo)(?:\\s*[:\\-].*)?$/iu', $line) === 1) {
+                if (preg_match('/^(modo\\s+de\\s+(preparo|fazer)|como\\s+preparar|preparo|passo\\s+a\\s+passo|instru[çc][õo]es)(?:\\s*[:\\-].*)?$/iu', $line) === 1) {
                     $section = 'steps';
                     $has_recipe_marker = true;
                     continue;
@@ -748,6 +847,16 @@ HTML;
                 }
 
                 if ($section === 'ingredients') {
+                    // Detect prep sub-sections that got mixed into ingredients
+                    if (preg_match('/^(modo\\s+de\\s+(preparo|fazer)|como\\s+preparar|preparo|passo\\s+a\\s+passo|instru[çc][õo]es|massa|recheio|montagem|cobertura)\\s*:?\\s*$/iu', $line) === 1) {
+                        $section = 'steps';
+                        $has_recipe_marker = true;
+                        // Include sub-section name as a step header if not a generic prep header
+                        if (preg_match('/^(massa|recheio|montagem|cobertura)\\s*:?\\s*$/iu', $line)) {
+                            $steps[] = '--- ' . trim($line) . ' ---';
+                        }
+                        continue;
+                    }
                     $ingredients[] = ltrim(preg_replace('/^[-*]\s*/', '', $line) ?? $line);
                     continue;
                 }
@@ -759,8 +868,18 @@ HTML;
                     $tip = trim($tip . ' ' . $line);
                     continue;
                 }
-                if ($section === 'description' || $section === '') {
+                if ($section === 'keypoints') {
+                    $key_points[] = ltrim(preg_replace('/^[-*]\\s*/', '', $line) ?? $line);
+                    continue;
+                }
+                if ($section === 'summary') {
+                    $summary = trim($summary . ' ' . $line);
+                    continue;
+                }
+                if ($section === 'description') {
                     $description_lines[] = trim($line);
+                } elseif ($section === '') {
+                    $body_lines[] = trim($line);
                 }
             }
 
@@ -785,11 +904,9 @@ HTML;
                 && ! $has_nutrition;
 
             if (! $is_generic && ! $ingredients) {
-                $ingredients = ['Ingredientes conforme orientação nutricional.'];
+                $ingredients = ['(sem ingredientes detectados)'];
             }
-            if (! $is_generic && ! $steps) {
-                $steps = ['Organize os ingredientes.', 'Prepare em fogo baixo.', 'Ajuste temperos e sirva.'];
-            } elseif (! $is_generic) {
+            if (! $is_generic && $steps) {
                 $steps = self::expand_step_lines($steps);
             }
 
@@ -797,6 +914,11 @@ HTML;
                 'title' => $title,
                 'category' => $category,
                 'description' => $description,
+                'body' => implode("\n", array_filter($body_lines, static function ($l) { return trim($l) !== ''; })),
+                'duration' => $duration,
+                'level' => $level,
+                'keyPoints' => array_values(array_filter($key_points, static function ($v) { return trim($v) !== ''; })),
+                'summary' => $summary,
                 'tempo' => $tempo,
                 'porcoes' => $porcoes,
                 'dificuldade' => $dificuldade,
@@ -958,69 +1080,25 @@ HTML;
      */
     private static function categorize_recipes_auto(array $recipes): array
     {
-        $biomassa = [];
-        $ovos = [];
-        $other = [];
-
-        foreach ($recipes as $recipe) {
-            $title = (string) ($recipe['title'] ?? '');
-            $normalized = self::normalize_for_match($title);
-
-            if (strpos($normalized, 'biomassa') !== false) {
-                $biomassa[] = $recipe;
-                continue;
-            }
-
-            if (preg_match('/\b(ovo|ovos|omelete|omeleta)\b/u', $normalized)) {
-                $ovos[] = $recipe;
-                continue;
-            }
-
-            $other[] = $recipe;
+        $total = count($recipes);
+        if ($total <= 5) {
+            return [self::build_category('geral', 'Conteúdo', $recipes, sprintf('%d %s', $total, $total === 1 ? 'item' : 'itens'))];
         }
 
-        $split = count($other) <= 2 ? count($other) : max(2, (int) ceil(count($other) * 0.35));
-        $split = min($split, count($other));
-
-        $rapidas = array_slice($other, 0, $split);
-        $saudaveis = array_slice($other, $split);
-
+        $roman = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII'];
+        $per_cat = max(3, (int) ceil($total / 3));
+        $chunks = array_chunk($recipes, $per_cat);
         $categories = [];
-        if ($rapidas) {
-            $categories[] = self::build_category(
-                'rapidas',
-                'Receitas Rápidas',
-                $rapidas,
-                sprintf('%d %s práticas para o dia a dia', count($rapidas), count($rapidas) === 1 ? 'receita' : 'receitas')
-            );
-        }
-        if ($biomassa) {
-            $categories[] = self::build_category(
-                'biomassa',
-                'Receitas com Biomassa de Banana',
-                $biomassa,
-                sprintf('%d %s nutritivas com biomassa de banana verde', count($biomassa), count($biomassa) === 1 ? 'opção' : 'opções')
-            );
-        }
-        if ($saudaveis) {
-            $categories[] = self::build_category(
-                'saudaveis',
-                'Mais Receitas Saudáveis',
-                $saudaveis,
-                sprintf('%d %s variadas para manter o equilíbrio', count($saudaveis), count($saudaveis) === 1 ? 'opção' : 'opções')
-            );
-        }
-        if ($ovos) {
-            $categories[] = self::build_category(
-                'ovos',
-                'Receitas com Ovos',
-                $ovos,
-                sprintf('%d %s proteicas e de alta saciedade', count($ovos), count($ovos) === 1 ? 'receita' : 'receitas')
-            );
-        }
 
-        if (! $categories) {
-            $categories[] = self::build_category('receitas', 'Receitas', $recipes, sprintf('%d receitas organizadas automaticamente', count($recipes)));
+        foreach ($chunks as $i => $chunk) {
+            $num = $roman[$i] ?? (string) ($i + 1);
+            $c = count($chunk);
+            $categories[] = self::build_category(
+                'parte-' . ($i + 1),
+                'Parte ' . $num,
+                $chunk,
+                sprintf('%d %s', $c, $c === 1 ? 'item' : 'itens')
+            );
         }
 
         return $categories;
@@ -1180,7 +1258,7 @@ HTML;
 
     private static function format_category_subtitle(string $custom_subtitle, int $count): string
     {
-        $count_label = sprintf('%d %s nesta categoria', $count, $count === 1 ? 'receita' : 'receitas');
+        $count_label = sprintf('%d %s nesta categoria', $count, $count === 1 ? 'item' : 'itens');
         if ($custom_subtitle === '') {
             return $count_label;
         }
@@ -1654,6 +1732,68 @@ HTML;
         ];
 
         return $palettes[$theme] ?? $palettes['ebook2-classic'];
+    }
+
+    /**
+     * Render educational body text with markdown-light support.
+     * ## heading → <h3>, > quote → <blockquote>, blank lines → paragraph breaks.
+     */
+    private static function render_educational_body(string $text): string
+    {
+        $text = trim(str_replace("\r\n", "\n", $text));
+        if ($text === '') {
+            return '';
+        }
+
+        $lines = explode("\n", $text);
+        $html = '';
+        $in_paragraph = false;
+
+        foreach ($lines as $line) {
+            $trimmed = trim($line);
+
+            if ($trimmed === '') {
+                if ($in_paragraph) {
+                    $html .= '</p>';
+                    $in_paragraph = false;
+                }
+                continue;
+            }
+
+            // Subheading: ## Title
+            if (preg_match('/^#{1,3}\s+(.+)$/', $trimmed, $m)) {
+                if ($in_paragraph) {
+                    $html .= '</p>';
+                    $in_paragraph = false;
+                }
+                $html .= '<h3 class="edu-subheading">' . self::h(trim($m[1])) . '</h3>';
+                continue;
+            }
+
+            // Blockquote: > text
+            if (preg_match('/^>\s*(.+)$/', $trimmed, $m)) {
+                if ($in_paragraph) {
+                    $html .= '</p>';
+                    $in_paragraph = false;
+                }
+                $html .= '<blockquote class="edu-quote">' . self::h(trim($m[1])) . '</blockquote>';
+                continue;
+            }
+
+            // Regular text — accumulate into paragraphs
+            if (! $in_paragraph) {
+                $html .= '<p>' . self::h($trimmed);
+                $in_paragraph = true;
+            } else {
+                $html .= ' ' . self::h($trimmed);
+            }
+        }
+
+        if ($in_paragraph) {
+            $html .= '</p>';
+        }
+
+        return $html;
     }
 
     private static function paragraphs(string $text): array

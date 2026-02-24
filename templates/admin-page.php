@@ -31,14 +31,16 @@
           <button type="button" class="pdfw-nav-item is-active" data-target-section="projetos">Projetos</button>
           <button type="button" class="pdfw-nav-item" data-target-section="capa">Capa e Tema</button>
           <button type="button" class="pdfw-nav-item" data-target-section="importacao">Importação</button>
-          <button type="button" class="pdfw-nav-item" data-target-section="receitas">Itens</button>
+          <button type="button" class="pdfw-nav-item" data-target-section="categorias">Categorias</button>
+          <button type="button" class="pdfw-nav-item" data-target-section="itens">Itens</button>
           <button type="button" class="pdfw-nav-item" data-target-section="extras">Extras</button>
           <button type="button" class="pdfw-nav-item" data-target-section="transcricao">Laboratório de Transcrição</button>
-          <button type="button" class="pdfw-nav-item" data-target-section="exportar">Exportar e Prévia</button>
+          <button type="button" class="pdfw-nav-item" data-target-section="exportar">Exportar</button>
         </nav>
       </aside>
 
       <div class="pdfw-editor-area">
+        <div class="pdfw-editor-panel" id="pdfw-editor-panel">
         <section class="pdfw-editor-section is-active" data-section-id="projetos">
           <section class="pdfw-card pdfw-projects-card">
             <h2>Projetos</h2>
@@ -79,9 +81,18 @@
               <label>Selo de autoria
                 <input type="text" name="seal" value="<?php echo esc_attr($payload['seal']); ?>">
               </label>
-              <label>Imagem da capa (URL opcional)
-                <input type="url" name="cover_image" value="<?php echo esc_attr((string) ($payload['cover_image'] ?? '')); ?>" placeholder="https://.../capa.jpg">
-              </label>
+              <label>Imagem da capa</label>
+              <div class="pdfw-img-upload" id="pdfw-cover-upload" style="cursor:pointer;">
+                <?php $coverVal = (string) ($payload['cover_image'] ?? ''); ?>
+                <?php if ($coverVal): ?>
+                  <img src="<?php echo esc_attr($coverVal); ?>" alt="Capa">
+                  <button type="button" class="pdfw-img-remove" id="pdfw-cover-remove">&times;</button>
+                <?php else: ?>
+                  <div class="pdfw-img-placeholder">Clique para enviar imagem de capa</div>
+                <?php endif; ?>
+              </div>
+              <input type="file" id="pdfw-cover-input" accept="image/*" style="display:none">
+              <input type="url" name="cover_image" value="<?php echo esc_attr($coverVal); ?>" placeholder="ou cole URL: https://.../capa.jpg" style="margin-top:6px">
             </section>
 
             <section class="pdfw-card">
@@ -112,10 +123,20 @@
                 <input type="url" name="drive_folder_url" value="<?php echo esc_attr((string) ($payload['drive_folder_url'] ?? '')); ?>" placeholder="https://drive.google.com/drive/folders/...">
               </label>
               <p class="hint">Importa subpastas automaticamente (até 4 níveis) e processa em lote para evitar timeout.</p>
-              <label>URL da API de Transcrição (Whisper)
-                <input type="url" name="whisper_url" value="<?php echo esc_attr((string) ($payload['whisper_url'] ?? PDFW_Ingestor::whisper_default_url())); ?>" placeholder="<?php echo esc_attr(PDFW_Ingestor::whisper_default_url()); ?>">
+              <label>Servidor Whisper
+                <select id="pdfw-whisper-preset" style="margin-top:4px;">
+                  <option value="online">Online (VPS)</option>
+                  <option value="local">Local GPU (localhost:8765)</option>
+                  <option value="custom">Personalizado</option>
+                </select>
               </label>
-              <p class="hint">Padrão: <code><?php echo esc_html(PDFW_Ingestor::whisper_default_url()); ?></code>. Deixe editável para cenários com IP/porta diferentes.</p>
+              <div id="pdfw-whisper-custom-wrap" style="margin-top:6px;display:none;">
+                <label>URL personalizada
+                  <input type="url" id="pdfw-whisper-custom-url" value="<?php echo esc_attr((string) ($payload['whisper_url'] ?? PDFW_Ingestor::whisper_default_url())); ?>" placeholder="<?php echo esc_attr(PDFW_Ingestor::whisper_default_url()); ?>">
+                </label>
+              </div>
+              <input type="hidden" id="pdfw-whisper-url-hidden" name="whisper_url" value="<?php echo esc_attr((string) ($payload['whisper_url'] ?? PDFW_Ingestor::whisper_default_url())); ?>">
+              <p class="hint">Online: <code><?php echo esc_html(PDFW_Ingestor::whisper_default_url()); ?></code> &middot; Local GPU: <code>http://localhost:8765/v1/audio/transcriptions</code></p>
               <label>Modo de importação
                 <select name="import_mode">
                   <option value="append" <?php selected((string) ($payload['import_mode'] ?? 'append'), 'append'); ?>>Somar com itens do editor</option>
@@ -137,8 +158,8 @@
               <h2>Formato esperado</h2>
               <p class="hint">
                 Você pode importar conteúdo em dois formatos:<br>
-                <strong>Receita</strong>: <code>Título</code>, <code>Ingredientes:</code>, <code>Modo de preparo:</code>, <code>Dica:</code>.<br>
-                <strong>Texto genérico</strong>: <code>Título</code> + corpo da aula/capítulo.<br>
+                <strong>Educacional</strong>: <code>Título</code> + corpo, <code>Duração:</code>, <code>Nível:</code>, <code>Pontos-chave:</code>, <code>Resumo:</code>.<br>
+                <strong>Receita (legado)</strong>: <code>Título</code>, <code>Ingredientes:</code>, <code>Modo de preparo:</code>, <code>Dica:</code>.<br>
                 No modo bruto, separe os blocos com <code>---</code>.
               </p>
             </section>
@@ -150,19 +171,22 @@
           </section>
         </section>
 
-        <section class="pdfw-editor-section" data-section-id="receitas">
+        <section class="pdfw-editor-section" data-section-id="categorias">
+          <section class="pdfw-card">
+            <h2>Categorias / Módulos</h2>
+            <p class="hint">Cada categoria gera uma página divisória no ebook. Defina subtítulo e imagem para personalizar.</p>
+            <textarea name="categories_raw" rows="8" hidden><?php echo esc_textarea((string) ($payload['categories_raw'] ?? '')); ?></textarea>
+            <div id="pdfw-category-manager"></div>
+            <div class="pdfw-actions" style="margin-top:12px;">
+              <button type="button" class="button button-secondary" id="pdfw-add-category">+ Nova Categoria</button>
+            </div>
+          </section>
+        </section>
+
+        <section class="pdfw-editor-section" data-section-id="itens">
           <section class="pdfw-card">
             <h2>Itens (editor estruturado)</h2>
-            <p class="hint">Edite receitas e textos por blocos para manter a diagramação consistente no PDF.</p>
-            <div class="pdfw-category-panel">
-              <div class="pdfw-category-header">
-                <strong>Categorias</strong>
-                <button type="button" class="button button-small" id="pdfw-add-category">Adicionar categoria</button>
-              </div>
-              <p class="hint">Cada categoria gera uma página divisória. Defina subtítulo e imagem da subcapa para personalizar.</p>
-              <textarea name="categories_raw" rows="8" hidden><?php echo esc_textarea((string) ($payload['categories_raw'] ?? '')); ?></textarea>
-              <div id="pdfw-category-manager"></div>
-            </div>
+            <p class="hint">Edite aulas e conteúdos por blocos para manter a diagramação consistente no PDF.</p>
             <div id="pdfw-recipe-builder"></div>
             <div class="pdfw-actions">
               <button type="button" class="button button-secondary" id="pdfw-add-recipe">Adicionar item</button>
@@ -244,21 +268,38 @@
         </section>
 
         <section class="pdfw-editor-section" data-section-id="exportar">
-          <div class="pdfw-actions">
-            <button type="button" class="button button-primary button-hero" id="pdfw-generate-preview-pdf">Prévia fiel (PDF)</button>
-            <button type="button" class="button button-secondary button-hero" id="pdfw-generate-preview-html">Prévia rápida (HTML)</button>
-            <button type="submit" class="button button-primary button-hero" id="pdfw-download-pdf" name="pdfw_output" value="pdf" style="display:none;">Baixar PDF</button>
-            <button type="submit" class="button button-secondary button-hero" id="pdfw-generate-html" name="pdfw_output" value="html">Gerar HTML</button>
-          </div>
-
-          <section class="pdfw-card pdfw-preview-card">
-            <h2>Pré-visualização</h2>
-            <p class="hint">Use <strong>Prévia fiel (PDF)</strong> para paginação real e <strong>Prévia rápida (HTML)</strong> para checagem de conteúdo.</p>
+          <section class="pdfw-card">
+            <h2>Exportar</h2>
+            <p class="hint">Use <strong>Prévia fiel (PDF)</strong> para paginação real e <strong>Prévia rápida (HTML)</strong> para checagem de conteúdo. A pré-visualização aparece no painel ao lado.</p>
+            <div class="pdfw-actions">
+              <button type="button" class="button button-primary button-hero" id="pdfw-generate-preview-pdf">Prévia fiel (PDF)</button>
+              <button type="button" class="button button-secondary button-hero" id="pdfw-generate-preview-html">Prévia rápida (HTML)</button>
+              <button type="submit" class="button button-primary button-hero" id="pdfw-download-pdf" name="pdfw_output" value="pdf" style="display:none;">Baixar PDF</button>
+              <button type="submit" class="button button-secondary button-hero" id="pdfw-generate-html" name="pdfw_output" value="html">Gerar HTML</button>
+            </div>
             <p class="hint" id="pdfw-preview-status">Nenhuma prévia gerada ainda.</p>
             <pre id="pdfw-preview-log" class="pdfw-preview-log" hidden></pre>
-            <iframe id="pdfw-preview-frame" title="Prévia do ebook"></iframe>
           </section>
         </section>
+        </div><!-- /.pdfw-editor-panel -->
+
+        <div class="pdfw-preview-panel" id="pdfw-preview-panel">
+          <div class="pdfw-preview-toolbar">
+            <button type="button" class="button button-small" id="pdfw-zoom-out" title="Reduzir">&minus;</button>
+            <span id="pdfw-zoom-label">70%</span>
+            <button type="button" class="button button-small" id="pdfw-zoom-in" title="Ampliar">+</button>
+            <button type="button" class="button button-small" id="pdfw-zoom-fit" title="Ajustar largura">&#x2922;</button>
+            <button type="button" class="button button-small" id="pdfw-preview-refresh" title="Atualizar">&#x21bb;</button>
+          </div>
+          <div class="pdfw-preview-container">
+            <iframe id="pdfw-preview-frame" title="Prévia do ebook" sandbox="allow-same-origin"></iframe>
+          </div>
+        </div><!-- /.pdfw-preview-panel -->
+
+        <div class="pdfw-mobile-tabs" id="pdfw-mobile-tabs">
+          <button type="button" class="pdfw-mobile-tab is-active" data-view="editor">Editor</button>
+          <button type="button" class="pdfw-mobile-tab" data-view="preview">Preview</button>
+        </div>
       </div>
     </div>
   </form>

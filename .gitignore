@@ -3,3 +3,9 @@
 /.vscode/
 *.log
 *.zip
+
+output/
+reference/
+auditoria*.md
+__pycache__/
+*.pyc

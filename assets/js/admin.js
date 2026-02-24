@@ -62,6 +62,157 @@
   const sidebarDirty = document.getElementById('pdfw-sidebar-dirty');
   const SECTION_STORAGE_KEY = 'pdfw_active_section';
 
+  /* --- Whisper preset dropdown --- */
+  const WHISPER_PRESETS = {
+    online: 'https://transcrever.rente.com.br/v1/audio/transcriptions',
+    local: 'http://localhost:8765/v1/audio/transcriptions',
+  };
+  const whisperPreset = document.getElementById('pdfw-whisper-preset');
+  const whisperCustomWrap = document.getElementById('pdfw-whisper-custom-wrap');
+  const whisperHidden = document.getElementById('pdfw-whisper-url-hidden');
+  const whisperCustomInput = document.getElementById('pdfw-whisper-custom-url');
+
+  function syncWhisperPreset() {
+    if (!whisperPreset || !whisperHidden) return;
+    const current = whisperHidden.value || '';
+    if (current === WHISPER_PRESETS.online || current === '') {
+      whisperPreset.value = 'online';
+      if (whisperCustomWrap) whisperCustomWrap.style.display = 'none';
+    } else if (current === WHISPER_PRESETS.local) {
+      whisperPreset.value = 'local';
+      if (whisperCustomWrap) whisperCustomWrap.style.display = 'none';
+    } else {
+      whisperPreset.value = 'custom';
+      if (whisperCustomWrap) whisperCustomWrap.style.display = '';
+      if (whisperCustomInput) whisperCustomInput.value = current;
+    }
+  }
+
+  function initWhisperPreset() {
+    if (!whisperPreset || !whisperHidden) return;
+    syncWhisperPreset();
+    whisperPreset.addEventListener('change', () => {
+      const v = whisperPreset.value;
+      if (v === 'custom') {
+        if (whisperCustomWrap) whisperCustomWrap.style.display = '';
+        if (whisperCustomInput) {
+          whisperHidden.value = whisperCustomInput.value || '';
+          whisperCustomInput.focus();
+        }
+      } else {
+        if (whisperCustomWrap) whisperCustomWrap.style.display = 'none';
+        whisperHidden.value = WHISPER_PRESETS[v] || '';
+      }
+    });
+    if (whisperCustomInput) {
+      whisperCustomInput.addEventListener('input', () => {
+        whisperHidden.value = whisperCustomInput.value;
+      });
+    }
+  }
+  initWhisperPreset();
+
+  /* --- Preview panel: zoom & mobile tabs --- */
+  const editorPanel = document.getElementById('pdfw-editor-panel');
+  const previewPanel = document.getElementById('pdfw-preview-panel');
+  const zoomInBtn = document.getElementById('pdfw-zoom-in');
+  const zoomOutBtn = document.getElementById('pdfw-zoom-out');
+  const zoomFitBtn = document.getElementById('pdfw-zoom-fit');
+  const zoomLabel = document.getElementById('pdfw-zoom-label');
+  const previewRefreshBtn = document.getElementById('pdfw-preview-refresh');
+  const mobileTabs = document.getElementById('pdfw-mobile-tabs');
+  let previewZoom = parseInt(localStorage.getItem('pdfw_preview_zoom')) || 70;
+  let mobileView = 'editor';
+
+  const applyPreviewZoom = () => {
+    if (!previewFrame) return;
+    const scale = previewZoom / 100;
+    previewFrame.style.transform = `scale(${scale})`;
+    previewFrame.style.transformOrigin = 'top left';
+    previewFrame.style.width = (100 / scale) + '%';
+    previewFrame.style.height = (100 / scale) + '%';
+    if (zoomLabel) zoomLabel.textContent = previewZoom + '%';
+    localStorage.setItem('pdfw_preview_zoom', String(previewZoom));
+  };
+
+  const zoomPreview = (dir) => {
+    previewZoom = Math.max(30, Math.min(150, previewZoom + dir * 10));
+    applyPreviewZoom();
+  };
+
+  const fitPreviewToWidth = () => {
+    const container = previewFrame?.parentElement;
+    if (!container) return;
+    const cw = container.clientWidth;
+    const pageWidth = 559; // 148mm at 96dpi
+    previewZoom = Math.max(30, Math.min(150, Math.round((cw / pageWidth) * 100)));
+    applyPreviewZoom();
+  };
+
+  const setMobileView = (view) => {
+    mobileView = view;
+    if (editorPanel) editorPanel.classList.toggle('is-hidden', view !== 'editor');
+    if (previewPanel) previewPanel.classList.toggle('is-hidden', view !== 'preview');
+    mobileTabs?.querySelectorAll('.pdfw-mobile-tab').forEach((tab) => {
+      tab.classList.toggle('is-active', tab.getAttribute('data-view') === view);
+    });
+    if (view === 'preview') applyPreviewZoom();
+  };
+
+  zoomInBtn?.addEventListener('click', () => zoomPreview(1));
+  zoomOutBtn?.addEventListener('click', () => zoomPreview(-1));
+  zoomFitBtn?.addEventListener('click', fitPreviewToWidth);
+  previewRefreshBtn?.addEventListener('click', () => {
+    if (typeof updateLivePreview === 'function') updateLivePreview();
+  });
+  mobileTabs?.addEventListener('click', (e) => {
+    const tab = e.target.closest('.pdfw-mobile-tab');
+    if (tab) setMobileView(tab.getAttribute('data-view') || 'editor');
+  });
+
+  // Apply initial zoom after page load
+  setTimeout(applyPreviewZoom, 500);
+
+  /* --- Cover image upload --- */
+  const coverUploadEl = document.getElementById('pdfw-cover-upload');
+  const coverFileInput = document.getElementById('pdfw-cover-input');
+  const coverUrlInput = form.querySelector('[name="cover_image"]');
+
+  const renderCoverUpload = () => {
+    if (!coverUploadEl || !coverUrlInput) return;
+    const url = coverUrlInput.value || '';
+    if (url) {
+      coverUploadEl.classList.add('has-image');
+      coverUploadEl.innerHTML = `<img src="${escapeHtml(url)}" alt="Capa"><button type="button" class="pdfw-img-remove" id="pdfw-cover-remove">&times;</button>`;
+    } else {
+      coverUploadEl.classList.remove('has-image');
+      coverUploadEl.innerHTML = '<div class="pdfw-img-placeholder">Clique para enviar imagem de capa</div>';
+    }
+  };
+
+  coverUploadEl?.addEventListener('click', (e) => {
+    if (e.target.closest('.pdfw-img-remove')) {
+      if (coverUrlInput) coverUrlInput.value = '';
+      renderCoverUpload();
+      markDirty();
+      if (typeof updateLivePreview === 'function') updateLivePreview();
+      return;
+    }
+    coverFileInput?.click();
+  });
+
+  coverFileInput?.addEventListener('change', async () => {
+    const file = coverFileInput.files?.[0];
+    if (!file) return;
+    const dataUrl = await readAndCompress(file, COVER_MAX_W, COVER_MAX_H);
+    if (dataUrl && coverUrlInput) {
+      coverUrlInput.value = dataUrl;
+      renderCoverUpload();
+      markDirty();
+      if (typeof updateLivePreview === 'function') updateLivePreview();
+    }
+  });
+
   let previewObjectUrl = '';
   let previewBusy = false;
   let importBusy = false;
@@ -73,11 +224,28 @@
   let initialPayload = null;
   let draggedRecipeIndex = -1;
   let draggedCategoryIndex = -1;
+  let editingItemIdx = -1;
 
   let projectsCache = [];
   let currentProjectId = '';
   let projectDirty = false;
   let activeSection = 'projetos';
+
+  let _syncTimer;
+  const debouncedSync = () => {
+    clearTimeout(_syncTimer);
+    _syncTimer = setTimeout(() => {
+      syncRawFromRecipes();
+      updateSidebarMeta();
+      markDirty();
+    }, 1200);
+  };
+  const flushSync = () => {
+    clearTimeout(_syncTimer);
+    syncRawFromRecipes();
+    updateSidebarMeta();
+    markDirty();
+  };
   let transcribeOutputs = {
     txt: '',
     srt: '',
@@ -251,15 +419,15 @@ Finalize com azeite extravirgem após o preparo.`;
       ? Math.max(0, Math.trunc(recipesDetectedFromResponse))
       : totals.recipesDetected;
 
-    importAuditSummary.textContent = `Arquivos analisados: ${items.length}. Itens detectados: ${recipesDetected}. Receitas: ${totals.recipe}. Textos: ${totals.generic}. Imagens: ${totals.image}. Ignorados: ${totals.skip}. Erros: ${totals.error}.`;
+    importAuditSummary.textContent = `Arquivos analisados: ${items.length}. Itens detectados: ${recipesDetected}. Conteúdo: ${totals.recipe + totals.generic}. Imagens: ${totals.image}. Ignorados: ${totals.skip}. Erros: ${totals.error}.`;
 
     const rowsHtml = items.map((item) => {
       const sourceLabel = item.source === 'drive' ? 'Google Drive' : 'Upload';
       let kindLabel = 'Ignorado';
       if (item.kind === 'recipe') {
-        kindLabel = item.recipesCount > 1 ? `Receita (${item.recipesCount})` : 'Receita';
+        kindLabel = item.recipesCount > 1 ? `Conteúdo (${item.recipesCount})` : 'Conteúdo';
       } else if (item.kind === 'generic') {
-        kindLabel = item.recipesCount > 1 ? `Texto (${item.recipesCount})` : 'Texto';
+        kindLabel = item.recipesCount > 1 ? `Conteúdo (${item.recipesCount})` : 'Conteúdo';
       } else if (item.kind === 'image') {
         kindLabel = 'Imagem';
       } else if (item.kind === 'error') {
@@ -397,6 +565,43 @@ Finalize com azeite extravirgem após o preparo.`;
     for (let i = 0; i < len; i += 1) bytes[i] = binary.charCodeAt(i);
     return new Blob([bytes], { type: contentType });
   };
+
+  /* --- Image compression (ported from Ebook Studio) --- */
+  const IMG_MAX_W = 1200;
+  const IMG_MAX_H = 900;
+  const IMG_QUALITY = 0.82;
+  const COVER_MAX_W = 1400;
+  const COVER_MAX_H = 2100;
+
+  const compressImage = (dataUrl, maxW, maxH, quality) => new Promise((resolve) => {
+    if (!dataUrl || dataUrl.length < 80000) { resolve(dataUrl); return; }
+    const img = new Image();
+    img.onload = () => {
+      let w = img.width, h = img.height;
+      if (w > maxW || h > maxH) {
+        const ratio = Math.min(maxW / w, maxH / h);
+        w = Math.round(w * ratio);
+        h = Math.round(h * ratio);
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      const compressed = canvas.toDataURL('image/jpeg', quality);
+      resolve(compressed.length < dataUrl.length ? compressed : dataUrl);
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+
+  const readAndCompress = (file, maxW, maxH) => new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const compressed = await compressImage(e.target.result, maxW || IMG_MAX_W, maxH || IMG_MAX_H, IMG_QUALITY);
+      resolve(compressed);
+    };
+    reader.onerror = () => resolve('');
+    reader.readAsDataURL(file);
+  });
 
   const extractError = (payload, fallback) => {
     if (payload && payload.data && typeof payload.data.message === 'string') {
@@ -1305,7 +1510,8 @@ Finalize com azeite extravirgem após o preparo.`;
         }
         const imageMatch = line.match(/^imagem\s*:?\s*(.+)$/i);
         if (imageMatch && imageMatch[1]) {
-          image = normalizeLine(imageMatch[1]);
+          const imgVal = normalizeLine(imageMatch[1]);
+          image = imgVal === '[upload]' ? '__keep__' : imgVal;
         }
       });
 
@@ -1438,11 +1644,16 @@ Finalize com azeite extravirgem após o preparo.`;
       const steps = [];
       const tipLines = [];
       const descriptionLines = [];
+      const bodyLines = [];
+      const keyPoints = [];
       let category = '';
       let tempo = '';
       let porcoes = '';
       let dificuldade = '';
       let image = '';
+      let duration = '';
+      let level = '';
+      let summary = '';
       const nutrition = { kcal: '', carb: '', prot: '', fat: '', fiber: '' };
 
       lines.forEach((line) => {
@@ -1484,7 +1695,8 @@ Finalize com azeite extravirgem após o preparo.`;
         }
         const imageMatch = line.match(/^imagem(?:\s+da\s+receita)?\s*:?\s*(.+)$/i);
         if (imageMatch && imageMatch[1]) {
-          image = normalizeLine(imageMatch[1]);
+          const imgVal = normalizeLine(imageMatch[1]);
+          image = imgVal === '[upload]' ? '__keep__' : imgVal;
           return;
         }
         if (low.includes('ingredientes')) {
@@ -1533,6 +1745,28 @@ Finalize com azeite extravirgem após o preparo.`;
           section = 'nutrition';
           return;
         }
+        const durationMatch = line.match(/^dura(?:c|ç)(?:a|ã)o\s*:?\s*(.+)$/i);
+        if (durationMatch && durationMatch[1]) {
+          duration = normalizeLine(durationMatch[1]);
+          return;
+        }
+        const levelMatch = line.match(/^n(?:i|í)vel\s*:?\s*(.+)$/i);
+        if (levelMatch && levelMatch[1]) {
+          level = normalizeLine(levelMatch[1]);
+          return;
+        }
+        if (/^pontos?[- ]chave\s*:?\s*/i.test(line)) {
+          section = 'keypoints';
+          const rest = line.replace(/^pontos?[- ]chave\s*:?\s*/i, '').trim();
+          if (rest) keyPoints.push(rest);
+          return;
+        }
+        const summaryMatch = line.match(/^resumo\s*:?\s*(.+)$/i);
+        if (summaryMatch && summaryMatch[1]) {
+          summary = normalizeLine(summaryMatch[1]);
+          section = 'summary';
+          return;
+        }
         if (low.startsWith('dica')) {
           section = 'tip';
           const rest = line.replace(/^dica\s*:?\s*/i, '').trim();
@@ -1550,6 +1784,14 @@ Finalize com azeite extravirgem após o preparo.`;
         }
         if (section === 'tip') {
           tipLines.push(line);
+          return;
+        }
+        if (section === 'keypoints') {
+          keyPoints.push(line.replace(/^[-*]\s*/, '').trim());
+          return;
+        }
+        if (section === 'summary') {
+          summary = (summary + ' ' + line).trim();
           return;
         }
         if (section === 'description' || section === '') {
@@ -1574,6 +1816,11 @@ Finalize com azeite extravirgem após o preparo.`;
         title: normalizeLine(title) || 'Item sem título',
         category: normalizeCategoryName(category),
         description: descriptionLines.join('\n').trim(),
+        body: bodyLines.join('\n').trim() || descriptionLines.join('\n').trim(),
+        duration,
+        level,
+        keyPoints: keyPoints.filter(Boolean),
+        summary,
         tempo,
         porcoes,
         dificuldade,
@@ -1659,7 +1906,27 @@ Finalize com azeite extravirgem após o preparo.`;
           lines.push(`Dificuldade: ${dificuldade}`);
         }
         if (image) {
-          lines.push(`Imagem: ${image}`);
+          lines.push(image.startsWith('data:') ? 'Imagem: [upload]' : `Imagem: ${image}`);
+        }
+
+        // Educational fields for non-recipe items
+        if (!isRecipeMode) {
+          const dur = normalizeLine(recipe?.duration);
+          const lvl = normalizeLine(recipe?.level);
+          const body = normalizeLine(recipe?.body);
+          const kps = Array.isArray(recipe?.keyPoints) ? recipe.keyPoints : [];
+          const smr = normalizeLine(recipe?.summary);
+          if (dur) lines.push(`Duração: ${dur}`);
+          if (lvl) lines.push(`Nível: ${lvl}`);
+          if (body && body !== description) {
+            body.split('\n').forEach(l => { const c = normalizeLine(l); if (c) lines.push(c); });
+          }
+          if (kps.length) {
+            lines.push('Pontos-chave:');
+            kps.forEach(k => { const c = normalizeLine(k); if (c) lines.push(`- ${c}`); });
+          }
+          if (smr) lines.push(`Resumo: ${smr}`);
+          if (tip) { lines.push('Dica:'); lines.push(tip); }
         }
 
         if (isRecipeMode) {
@@ -1748,135 +2015,216 @@ Finalize com azeite extravirgem após o preparo.`;
     categoryManager.innerHTML = `<div class="pdfw-category-list">${html}</div>`;
   };
 
-  const renderRecipeBuilder = () => {
-    if (!recipeBuilder) return;
+  const isRecipeMode = (recipe) => {
+    if (!recipe) return false;
+    if (recipe.isGeneric) return false;
+    const nutrition = recipe.nutrition && typeof recipe.nutrition === 'object' ? recipe.nutrition : {};
+    const hasNutrition = Object.values(nutrition).some((v) => normalizeLine(v) !== '');
+    return (recipe.ingredients || []).length > 0
+      || (recipe.steps || []).length > 0
+      || normalizeLine(recipe.tempo) !== ''
+      || normalizeLine(recipe.porcoes) !== ''
+      || normalizeLine(recipe.dificuldade) !== ''
+      || hasNutrition;
+  };
 
+  const renderItemList = () => {
     if (!recipesState.length) {
-      recipeBuilder.innerHTML = '<div class="pdfw-recipe-empty">Nenhum item no editor. Clique em "Adicionar item".</div>';
-      updateSidebarMeta();
-      return;
+      return '<div class="pdfw-recipe-empty">Nenhum item no editor. Clique em "Adicionar item".</div>';
+    }
+    return recipesState.map((recipe, index) => {
+      const title = normalizeLine(recipe.title) || 'Item sem título';
+      const category = normalizeCategoryName(recipe.category) || categoriesState[0]?.name || 'Itens';
+      const isRec = isRecipeMode(recipe);
+      const ingCount = (recipe.ingredients || []).length;
+      const stepCount = (recipe.steps || []).length;
+      const preview = isRec
+        ? `${ingCount} ingred. · ${stepCount} passos`
+        : (() => {
+            const parts = [];
+            if (recipe.duration) parts.push(normalizeLine(recipe.duration));
+            if (recipe.level) parts.push(normalizeLine(recipe.level));
+            if (recipe.keyPoints?.length) parts.push(`${recipe.keyPoints.length} pontos-chave`);
+            if (parts.length) return parts.join(' · ');
+            return (normalizeLine(recipe.description) || '').substring(0, 60) + ((recipe.description || '').length > 60 ? '…' : '');
+          })();
+      return `
+        <article class="pdfw-recipe-card pdfw-item-compact ${isRec ? 'is-recipe' : 'is-generic'}" data-index="${index}" draggable="true">
+          <div class="pdfw-recipe-card-header">
+            <div class="pdfw-recipe-card-title">
+              <span class="pdfw-category-handle">☰</span>
+              <span class="pdfw-recipe-index">${index + 1}</span>
+              <span class="pdfw-recipe-name">${escapeHtml(title)}</span>
+              <span class="pdfw-item-badge">${escapeHtml(category)}</span>
+              <small class="pdfw-item-type">${isRec ? 'Receita' : 'Aula'}</small>
+            </div>
+            <div class="pdfw-recipe-actions">
+              <button type="button" class="button button-small button-primary" data-action="edit">Editar</button>
+              <button type="button" class="button button-small" data-action="up" ${index === 0 ? 'disabled' : ''}>↑</button>
+              <button type="button" class="button button-small" data-action="down" ${index === recipesState.length - 1 ? 'disabled' : ''}>↓</button>
+              <button type="button" class="button button-small pdfw-btn-danger" data-action="remove">✕</button>
+            </div>
+          </div>
+          <div class="pdfw-item-preview">${escapeHtml(preview)}</div>
+        </article>
+      `;
+    }).join('');
+  };
+
+  const renderItemForm = (idx) => {
+    const recipe = recipesState[idx];
+    if (!recipe) { editingItemIdx = -1; return renderItemList(); }
+    const title = normalizeLine(recipe.title) || 'Item sem título';
+    const category = normalizeCategoryName(recipe.category) || categoriesState[0]?.name || 'Itens';
+    const description = normalizeLine(recipe.description);
+    const tempo = normalizeLine(recipe.tempo);
+    const porcoes = normalizeLine(recipe.porcoes);
+    const dificuldade = normalizeLine(recipe.dificuldade);
+    const image = normalizeLine(recipe.image);
+    const ingredientsText = (recipe.ingredients || []).join('\n');
+    const stepsText = (recipe.steps || []).join('\n');
+    const tip = recipe.tip || '';
+    const nutrition = recipe.nutrition && typeof recipe.nutrition === 'object'
+      ? recipe.nutrition : { kcal: '', carb: '', prot: '', fat: '', fiber: '' };
+    const isRec = isRecipeMode(recipe);
+
+    let contentHtml = '';
+    if (isRec) {
+      contentHtml = `
+        <div class="pdfw-field pdfw-field--full">
+          <label>Descrição</label>
+          <textarea rows="3" data-field="description">${escapeHtml(description)}</textarea>
+        </div>
+        <div class="pdfw-field">
+          <label>Tempo</label>
+          <input type="text" data-field="tempo" value="${escapeHtml(tempo)}" placeholder="Ex.: 45 min">
+        </div>
+        <div class="pdfw-field">
+          <label>Porções</label>
+          <input type="text" data-field="porcoes" value="${escapeHtml(porcoes)}" placeholder="Ex.: 4 porções">
+        </div>
+        <div class="pdfw-field">
+          <label>Dificuldade</label>
+          <input type="text" data-field="dificuldade" value="${escapeHtml(dificuldade)}" placeholder="Ex.: Fácil">
+        </div>
+        <div class="pdfw-field">
+          <label>Ingredientes (1 por linha)</label>
+          <textarea rows="7" data-field="ingredients">${escapeHtml(ingredientsText)}</textarea>
+        </div>
+        <div class="pdfw-field">
+          <label>Modo de preparo (1 passo por linha)</label>
+          <textarea rows="7" data-field="steps">${escapeHtml(stepsText)}</textarea>
+        </div>
+        <div class="pdfw-field pdfw-field--full">
+          <label>Dica do Chef</label>
+          <textarea rows="3" data-field="tip">${escapeHtml(tip)}</textarea>
+        </div>
+        <div class="pdfw-field pdfw-field--full">
+          <label>Informação Nutricional</label>
+          <div class="pdfw-nutrition-grid">
+            <input type="text" data-field="nutrition_kcal" value="${escapeHtml(normalizeLine(nutrition.kcal))}" placeholder="Calorias">
+            <input type="text" data-field="nutrition_carb" value="${escapeHtml(normalizeLine(nutrition.carb))}" placeholder="Carboidratos">
+            <input type="text" data-field="nutrition_prot" value="${escapeHtml(normalizeLine(nutrition.prot))}" placeholder="Proteínas">
+            <input type="text" data-field="nutrition_fat" value="${escapeHtml(normalizeLine(nutrition.fat))}" placeholder="Gorduras">
+            <input type="text" data-field="nutrition_fiber" value="${escapeHtml(normalizeLine(nutrition.fiber))}" placeholder="Fibras">
+          </div>
+        </div>
+      `;
+    } else {
+      const duration = normalizeLine(recipe.duration || '');
+      const level = normalizeLine(recipe.level || '');
+      const body = normalizeLine(recipe.body || recipe.description || '');
+      const keyPointsText = (recipe.keyPoints || []).join('\n');
+      const summaryText = normalizeLine(recipe.summary || '');
+      contentHtml = `
+        <div class="pdfw-field">
+          <label>Duração</label>
+          <input type="text" data-field="duration" value="${escapeHtml(duration)}" placeholder="Ex.: 45 min">
+        </div>
+        <div class="pdfw-field">
+          <label>Nível</label>
+          <input type="text" data-field="level" value="${escapeHtml(level)}" placeholder="Ex.: Iniciante">
+        </div>
+        <div class="pdfw-field pdfw-field--full">
+          <label>Descrição / Resumo curto</label>
+          <textarea rows="3" data-field="description" placeholder="Breve resumo da aula...">${escapeHtml(description)}</textarea>
+        </div>
+        <div class="pdfw-field pdfw-field--full">
+          <label>Conteúdo da aula</label>
+          <textarea rows="12" data-field="body" placeholder="Cole ou edite o texto completo. Linhas em branco separam parágrafos. ## subtítulo, > citação.">${escapeHtml(body)}</textarea>
+        </div>
+        <div class="pdfw-field pdfw-field--full">
+          <label>Pontos-chave (1 por linha)</label>
+          <textarea rows="5" data-field="keyPoints">${escapeHtml(keyPointsText)}</textarea>
+        </div>
+        <div class="pdfw-field pdfw-field--full">
+          <label>Resumo final</label>
+          <textarea rows="3" data-field="summary" placeholder="Conclusão ou síntese da aula...">${escapeHtml(summaryText)}</textarea>
+        </div>
+        <div class="pdfw-field pdfw-field--full">
+          <label>Nota do autor</label>
+          <textarea rows="2" data-field="tip">${escapeHtml(tip)}</textarea>
+        </div>
+      `;
     }
 
-    recipeBuilder.innerHTML = recipesState
-      .map((recipe, index) => {
-        const title = normalizeLine(recipe.title) || 'Item sem título';
-        const category = normalizeCategoryName(recipe.category) || categoriesState[0]?.name || 'Itens';
-        const description = normalizeLine(recipe.description);
-        const tempo = normalizeLine(recipe.tempo);
-        const porcoes = normalizeLine(recipe.porcoes);
-        const dificuldade = normalizeLine(recipe.dificuldade);
-        const image = normalizeLine(recipe.image);
-        const ingredientsText = (recipe.ingredients || []).join('\n');
-        const stepsText = (recipe.steps || []).join('\n');
-        const tip = recipe.tip || '';
-        const nutrition = recipe.nutrition && typeof recipe.nutrition === 'object'
-          ? recipe.nutrition
-          : { kcal: '', carb: '', prot: '', fat: '', fiber: '' };
-        const kcal = normalizeLine(nutrition.kcal);
-        const carb = normalizeLine(nutrition.carb);
-        const prot = normalizeLine(nutrition.prot);
-        const fat = normalizeLine(nutrition.fat);
-        const fiber = normalizeLine(nutrition.fiber);
-        const hasNutrition = [kcal, carb, prot, fat, fiber].some((value) => value !== '');
-        const isRecipeMode = !recipe?.isGeneric
-          && (
-            (recipe.ingredients || []).length > 0
-            || (recipe.steps || []).length > 0
-            || tempo !== ''
-            || porcoes !== ''
-            || dificuldade !== ''
-            || hasNutrition
-          );
-
-        let contentHtml = '';
-        if (isRecipeMode) {
-          contentHtml = `
-              <div class="pdfw-field pdfw-field--full">
-                <label>Descrição</label>
-                <textarea rows="3" data-field="description">${escapeHtml(description)}</textarea>
-              </div>
-              <div class="pdfw-field">
-                <label>Tempo</label>
-                <input type="text" data-field="tempo" value="${escapeHtml(tempo)}" placeholder="Ex.: 45 min">
-              </div>
-              <div class="pdfw-field">
-                <label>Porções</label>
-                <input type="text" data-field="porcoes" value="${escapeHtml(porcoes)}" placeholder="Ex.: 4 porções">
-              </div>
-              <div class="pdfw-field">
-                <label>Dificuldade</label>
-                <input type="text" data-field="dificuldade" value="${escapeHtml(dificuldade)}" placeholder="Ex.: Fácil">
-              </div>
-              <div class="pdfw-field">
-                <label>Ingredientes (1 por linha)</label>
-                <textarea rows="7" data-field="ingredients">${escapeHtml(ingredientsText)}</textarea>
-              </div>
-              <div class="pdfw-field">
-                <label>Modo de preparo (1 passo por linha)</label>
-                <textarea rows="7" data-field="steps">${escapeHtml(stepsText)}</textarea>
-              </div>
-              <div class="pdfw-field pdfw-field--full">
-                <label>Dica do Chef</label>
-                <textarea rows="3" data-field="tip">${escapeHtml(tip)}</textarea>
-              </div>
-              <div class="pdfw-field pdfw-field--full">
-                <label>Informação Nutricional</label>
-                <div class="pdfw-nutrition-grid">
-                  <input type="text" data-field="nutrition_kcal" value="${escapeHtml(kcal)}" placeholder="Calorias">
-                  <input type="text" data-field="nutrition_carb" value="${escapeHtml(carb)}" placeholder="Carboidratos">
-                  <input type="text" data-field="nutrition_prot" value="${escapeHtml(prot)}" placeholder="Proteínas">
-                  <input type="text" data-field="nutrition_fat" value="${escapeHtml(fat)}" placeholder="Gorduras">
-                  <input type="text" data-field="nutrition_fiber" value="${escapeHtml(fiber)}" placeholder="Fibras">
-                </div>
-              </div>
-          `;
-        } else {
-          contentHtml = `
-              <div class="pdfw-field pdfw-field--full">
-                <label>Conteúdo (capítulo/aula)</label>
-                <textarea rows="14" data-field="description" placeholder="Cole ou edite o texto completo aqui...">${escapeHtml(description)}</textarea>
-              </div>
-          `;
-        }
-
-        return `
-          <article class="pdfw-recipe-card ${isRecipeMode ? 'is-recipe' : 'is-generic'}" data-index="${index}" draggable="true">
-            <div class="pdfw-recipe-card-header">
-              <div class="pdfw-recipe-card-title">
-                <span class="pdfw-category-handle">☰</span>
-                <span class="pdfw-recipe-index">${index + 1}</span>
-                <span class="pdfw-recipe-name">${escapeHtml(title)} <small>(${isRecipeMode ? 'Receita' : 'Texto'})</small></span>
-              </div>
-              <div class="pdfw-recipe-actions">
-                <button type="button" class="button button-small" data-action="up" ${index === 0 ? 'disabled' : ''}>↑</button>
-                <button type="button" class="button button-small" data-action="down" ${index === recipesState.length - 1 ? 'disabled' : ''}>↓</button>
-                <button type="button" class="button button-small" data-action="remove">Excluir</button>
-              </div>
+    return `
+      <div class="pdfw-item-form-header">
+        <button type="button" class="button" data-action="back-to-list">← Voltar à lista</button>
+        <span class="pdfw-item-form-title">Editando: <strong>${escapeHtml(title)}</strong> <small>(${idx + 1}/${recipesState.length})</small></span>
+        <div class="pdfw-item-form-nav">
+          <button type="button" class="button button-small" data-action="prev-item" ${idx === 0 ? 'disabled' : ''}>← Anterior</button>
+          <button type="button" class="button button-small" data-action="next-item" ${idx >= recipesState.length - 1 ? 'disabled' : ''}>Próximo →</button>
+        </div>
+      </div>
+      <article class="pdfw-recipe-card pdfw-item-editing ${isRec ? 'is-recipe' : 'is-generic'}" data-index="${idx}">
+        <div class="pdfw-recipe-grid">
+          <div class="pdfw-field pdfw-field--full">
+            <label>Título</label>
+            <input type="text" data-field="title" value="${escapeHtml(title)}">
+          </div>
+          <div class="pdfw-field pdfw-field--full">
+            <label>Categoria</label>
+            <select data-field="category">${categoryOptionsHtml(category)}</select>
+          </div>
+          <div class="pdfw-field pdfw-field--full">
+            <label>Imagem de destaque</label>
+            <div class="pdfw-img-upload ${image ? 'has-image' : ''}" data-action="upload-image">
+              ${image
+                ? `<img src="${escapeHtml(image)}" alt=""><button type="button" class="pdfw-img-remove" data-action="remove-image">&times;</button>`
+                : '<div class="pdfw-img-placeholder">Clique para enviar imagem</div>'
+              }
             </div>
-            <div class="pdfw-recipe-grid">
-              <div class="pdfw-field pdfw-field--full">
-                <label>Título</label>
-                <input type="text" data-field="title" value="${escapeHtml(title)}">
-              </div>
-              <div class="pdfw-field pdfw-field--full">
-                <label>Categoria</label>
-                <select data-field="category">${categoryOptionsHtml(category)}</select>
-              </div>
-              <div class="pdfw-field pdfw-field--full">
-                <label>Imagem de destaque (URL)</label>
-                <input type="url" data-field="image" value="${escapeHtml(image)}" placeholder="https://.../receita.jpg">
-              </div>
-              ${contentHtml}
-            </div>
-          </article>
-        `;
-      })
-      .join('');
+            <input type="file" class="pdfw-img-input" data-field="image-file" accept="image/*" style="display:none">
+            <input type="url" data-field="image" value="${escapeHtml(image && !image.startsWith('data:') ? image : '')}" placeholder="ou cole URL: https://.../receita.jpg" style="margin-top:6px">
+          </div>
+          ${contentHtml}
+        </div>
+      </article>
+    `;
+  };
+
+  const renderRecipeBuilder = () => {
+    if (!recipeBuilder) return;
+    if (editingItemIdx >= 0 && editingItemIdx < recipesState.length) {
+      recipeBuilder.innerHTML = renderItemForm(editingItemIdx);
+    } else {
+      editingItemIdx = -1;
+      recipeBuilder.innerHTML = renderItemList();
+    }
     updateSidebarMeta();
   };
 
   const syncRecipesFromRaw = () => {
+    const prevState = [...recipesState];
+    editingItemIdx = -1;
     recipesState = parseRecipesRaw(recipesRawInput?.value || '');
+    // Preserve uploaded images marked as [upload] in raw text
+    recipesState.forEach((recipe, i) => {
+      if (recipe.image === '__keep__') {
+        recipe.image = (prevState[i] && prevState[i].image) || '';
+      }
+    });
     categoriesState = parseCategoriesRaw(categoriesRawInput?.value || '');
     rebuildCategoriesFromRecipes();
     renderCategoryManager();
@@ -1887,9 +2235,14 @@ Finalize com azeite extravirgem após o preparo.`;
   const addRecipe = () => {
     const defaultCategory = categoriesState[0]?.name || 'Itens';
     recipesState.push({
-      title: 'Novo item',
+      title: 'Nova aula',
       category: defaultCategory,
       description: '',
+      body: '',
+      duration: '',
+      level: '',
+      keyPoints: [],
+      summary: '',
       tempo: '',
       porcoes: '',
       dificuldade: '',
@@ -1900,6 +2253,7 @@ Finalize com azeite extravirgem após o preparo.`;
       nutrition: { kcal: '', carb: '', prot: '', fat: '', fiber: '' },
       isGeneric: true,
     });
+    editingItemIdx = recipesState.length - 1;
     rebuildCategoriesFromRecipes();
     syncRawFromRecipes();
     renderCategoryManager();
@@ -1937,17 +2291,13 @@ Finalize com azeite extravirgem após o preparo.`;
 
     const field = target.getAttribute('data-field');
     if (!field) return;
-    const wasGeneric = Boolean(recipesState[index]?.isGeneric);
-    let requiresFullRender = false;
-    let requiresCategoryRefresh = false;
 
+    // Update state only — no DOM rebuild, no sync
     if (field === 'title') {
       recipesState[index].title = target.value;
     } else if (field === 'category') {
       const nextCategory = normalizeCategoryName(target.value);
       recipesState[index].category = nextCategory || (categoriesState[0]?.name || 'Itens');
-      requiresFullRender = true;
-      requiresCategoryRefresh = true;
     } else if (field === 'description') {
       recipesState[index].description = target.value;
     } else if (field === 'tempo') {
@@ -1964,6 +2314,16 @@ Finalize com azeite extravirgem após o preparo.`;
       recipesState[index].steps = toList(target.value, 'steps');
     } else if (field === 'tip') {
       recipesState[index].tip = target.value;
+    } else if (field === 'duration') {
+      recipesState[index].duration = target.value;
+    } else if (field === 'level') {
+      recipesState[index].level = target.value;
+    } else if (field === 'body') {
+      recipesState[index].body = target.value;
+    } else if (field === 'keyPoints') {
+      recipesState[index].keyPoints = target.value.split('\n').filter(l => l.trim() !== '');
+    } else if (field === 'summary') {
+      recipesState[index].summary = target.value;
     } else if (field.startsWith('nutrition_')) {
       if (!recipesState[index].nutrition || typeof recipesState[index].nutrition !== 'object') {
         recipesState[index].nutrition = { kcal: '', carb: '', prot: '', fat: '', fiber: '' };
@@ -1974,49 +2334,24 @@ Finalize com azeite extravirgem após o preparo.`;
       }
     }
 
-    const current = recipesState[index] || {};
-    const hasNutrition = current?.nutrition && typeof current.nutrition === 'object'
-      ? Object.values(current.nutrition).some((value) => normalizeLine(value) !== '')
-      : false;
-    const hasRecipeData = (Array.isArray(current.ingredients) && current.ingredients.length > 0)
-      || (Array.isArray(current.steps) && current.steps.length > 0)
-      || normalizeLine(current.tempo) !== ''
-      || normalizeLine(current.porcoes) !== ''
-      || normalizeLine(current.dificuldade) !== ''
-      || hasNutrition;
-    recipesState[index].isGeneric = !hasRecipeData;
-    if (wasGeneric !== recipesState[index].isGeneric) {
-      requiresFullRender = true;
-      requiresCategoryRefresh = true;
-    }
+    // Recompute isGeneric (lightweight check, no DOM effect)
+    recipesState[index].isGeneric = !isRecipeMode(recipesState[index]);
 
-    if (requiresCategoryRefresh) {
-      rebuildCategoriesFromRecipes();
-    }
-    syncRawFromRecipes();
-
-    if (requiresFullRender) {
-      renderCategoryManager();
-      renderRecipeBuilder();
-    } else {
-      if (field === 'title') {
-        const nameEl = card.querySelector('.pdfw-recipe-name');
-        if (nameEl) {
-          const label = normalizeLine(recipesState[index].title || '') || 'Item sem título';
-          const mode = recipesState[index].isGeneric ? 'Texto' : 'Receita';
-          nameEl.innerHTML = `${escapeHtml(label)} <small>(${escapeHtml(mode)})</small>`;
-        }
-      }
-      updateSidebarMeta();
-    }
-
-    markDirty();
-    scrollToPreviewItem(index);
+    // Debounced save — serializes + updates preview after 1.2s of no typing
+    debouncedSync();
   };
 
   const handleRecipeBuilderClick = (event) => {
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
+
+    // Image upload: click on upload area (not on remove button)
+    const uploadArea = target.closest('.pdfw-img-upload');
+    if (uploadArea && !target.closest('.pdfw-img-remove')) {
+      const fileInput = uploadArea.parentElement?.querySelector('.pdfw-img-input');
+      if (fileInput) fileInput.click();
+      return;
+    }
 
     const button = target.closest('button[data-action]');
     if (!button) {
@@ -2029,13 +2364,59 @@ Finalize com azeite extravirgem após o preparo.`;
       return;
     }
 
+    const action = button.getAttribute('data-action');
+
+    // Global actions (no card context required)
+    if (action === 'back-to-list') {
+      flushSync();
+      editingItemIdx = -1;
+      rebuildCategoriesFromRecipes();
+      renderCategoryManager();
+      renderRecipeBuilder();
+      return;
+    }
+    if (action === 'prev-item' && editingItemIdx > 0) {
+      flushSync();
+      editingItemIdx--;
+      renderRecipeBuilder();
+      scrollToPreviewItem(editingItemIdx);
+      return;
+    }
+    if (action === 'next-item' && editingItemIdx < recipesState.length - 1) {
+      flushSync();
+      editingItemIdx++;
+      renderRecipeBuilder();
+      scrollToPreviewItem(editingItemIdx);
+      return;
+    }
+
     const card = button.closest('.pdfw-recipe-card');
     if (!card) return;
 
     const index = Number(card.getAttribute('data-index'));
     if (Number.isNaN(index) || !recipesState[index]) return;
 
-    const action = button.getAttribute('data-action');
+    if (action === 'edit') {
+      flushSync();
+      editingItemIdx = index;
+      renderRecipeBuilder();
+      scrollToPreviewItem(index);
+      return;
+    }
+
+    if (action === 'remove-image') {
+      recipesState[index].image = '';
+      renderRecipeBuilder();
+      debouncedSync();
+      return;
+    }
+
+    if (action === 'upload-image') {
+      const fileInput = card.querySelector('.pdfw-img-input');
+      if (fileInput) fileInput.click();
+      return;
+    }
+
     if (action === 'remove') {
       recipesState.splice(index, 1);
     } else if (action === 'up' && index > 0) {
@@ -2277,13 +2658,13 @@ Finalize com azeite extravirgem após o preparo.`;
     if (previewFrame) {
       previewFrame.removeAttribute('src');
       previewFrame.srcdoc = html;
+      setTimeout(applyPreviewZoom, 100);
     }
   };
 
   const generatePreview = async (mode) => {
     if (previewBusy) return;
 
-    activateSection('exportar');
     syncRawFromRecipes();
     previewBusy = true;
     setPreviewButtonsDisabled(true);
@@ -2639,7 +3020,7 @@ Finalize com azeite extravirgem após o preparo.`;
       if (noticeLines.length) {
         setLog(noticeLines.join('\n\n'));
       }
-      activateSection('receitas');
+      activateSection('itens');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Erro ao importar conteúdo.';
       setImportStatus(message, 'error');
@@ -2694,6 +3075,7 @@ Finalize com azeite extravirgem após o preparo.`;
     });
 
     syncRecipesFromRaw();
+    syncWhisperPreset();
 
     suppressDirty = false;
     if (!silent) {
@@ -2881,9 +3263,12 @@ Finalize com azeite extravirgem após o preparo.`;
       }
     }
 
-    if (initialPayload) {
-      applyPayloadToForm(initialPayload, { silent: true });
-    }
+    // Reset form to blank state — never reuse initialPayload which may carry stale items
+    const blankPayload = {};
+    ['title', 'subtitle', 'author', 'seal', 'theme', 'recipes_raw', 'categories_raw',
+     'about', 'tips', 'drive_folder_url', 'cover_image', 'whisper_url', 'import_mode'
+    ].forEach(k => { blankPayload[k] = ''; });
+    applyPayloadToForm(blankPayload, { silent: true });
 
     projectDirty = false;
     if (!silentStatus) {
@@ -2943,6 +3328,21 @@ Finalize com azeite extravirgem após o preparo.`;
     recipeBuilder.addEventListener('dragover', handleRecipeDragOver);
     recipeBuilder.addEventListener('drop', handleRecipeDrop);
     recipeBuilder.addEventListener('dragend', clearRecipeDragging);
+    recipeBuilder.addEventListener('change', async (e) => {
+      const fileInput = e.target;
+      if (!fileInput || !fileInput.classList.contains('pdfw-img-input')) return;
+      const file = fileInput.files?.[0];
+      if (!file) return;
+      const card = fileInput.closest('.pdfw-recipe-card');
+      const index = Number(card?.getAttribute('data-index'));
+      if (!Number.isFinite(index) || !recipesState[index]) return;
+      const dataUrl = await readAndCompress(file, IMG_MAX_W, IMG_MAX_H);
+      if (dataUrl) {
+        recipesState[index].image = dataUrl;
+        renderRecipeBuilder();
+        debouncedSync();
+      }
+    });
   }
 
   if (categoryManager) {

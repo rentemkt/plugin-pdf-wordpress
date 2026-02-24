@@ -1,0 +1,76 @@
+{
+  "project": "plugin-pdf-wordpress",
+  "plugin_name": "PDF Ebook Studio",
+  "version": "0.4.1",
+  "scope_boundary": {
+    "in_scope": [
+      "plugin wordpress",
+      "ui admin",
+      "ingestao de conteudo",
+      "geracao html/pdf",
+      "fluxo de transcricao no plugin"
+    ],
+    "out_of_scope": [
+      "alterar servidor transcrever.rente.com.br",
+      "alterar infraestrutura externa"
+    ]
+  },
+  "transcription": {
+    "default_url": "https://transcrever.rente.com.br/v1/audio/transcriptions",
+    "supported_extensions": [
+      "mp3",
+      "wav",
+      "m4a",
+      "ogg",
+      "mp4",
+      "mpeg",
+      "webm",
+      "mkv"
+    ],
+    "outputs": [
+      "text",
+      "srt",
+      "vtt",
+      "lipsync_json"
+    ],
+    "chunking": {
+      "trigger_seconds": 900,
+      "target_range_minutes": "10-12",
+      "resume_supported": true
+    }
+  },
+  "ajax_actions": {
+    "transcribe_start": "pdfw_standalone_transcribe",
+    "transcribe_progress": "pdfw_transcribe_progress",
+    "import": "pdfw_import",
+    "preview": "pdfw_preview",
+    "projects": "pdfw_projects"
+  },
+  "critical_files": [
+    "includes/class-pdfw-ingestor.php",
+    "includes/class-pdfw-admin-page.php",
+    "assets/js/admin.js",
+    "templates/admin-page.php",
+    "plugin-pdf-wordpress.php"
+  ],
+  "response_contract_transcribe": [
+    "text",
+    "srt",
+    "vtt",
+    "lipsync_json",
+    "partial",
+    "failed_part",
+    "processed_parts",
+    "total_parts",
+    "resume_token",
+    "resume_next_part"
+  ],
+  "manual_smoke_test": [
+    "abrir aba laboratorio de transcricao",
+    "enviar arquivo > 15 min",
+    "validar progresso por partes",
+    "validar botao retomar em falha parcial",
+    "retomar e confirmar saida agregada",
+    "baixar txt/srt/vtt/lipsync"
+  ]
+}

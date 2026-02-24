@@ -1,34 +1,65 @@
 # Plugin PDF WordPress
 
-Plugin WordPress para geração de ebook em HTML/PDF com temas visuais, focado em fluxo simples no painel admin.
+Plugin WordPress para geração de ebooks educacionais em HTML/PDF, com importação híbrida (upload + Google Drive), classificação inteligente de conteúdo e laboratório de transcrição integrado.
 
-## Status
+## Versão atual
 
-Versão atual (v0.4.1):
+`v0.5.0`
 
-- tela admin `PDF Ebook Studio`
-- gestão de projetos e clientes no próprio WordPress (salvar, carregar, excluir)
-- editor em seções (Projetos, Capa/Tema, Importação, Receitas, Extras, Exportar/Prévia)
-- editor estruturado de receitas com metadados completos (categoria, descrição, tempo, porções, dificuldade, imagem, dica e nutricional) com sincronização do texto bruto
-- drag-and-drop de receitas e categorias no editor
-- categorias pré-cadastradas com `nome + subtítulo + imagem` para subcapas
-- contador de receitas por categoria (incluindo categorias vazias)
-- suporte a `Categoria:` no conteúdo bruto para preservar agrupamento manual no PDF
-- botão `Importar conteúdo` (Drive/upload) para popular o editor sem depender de prévia
-- importação pode atualizar automaticamente o projeto salvo no banco
-- auditoria visual da importação (resumo + status por arquivo processado)
-- parser heurístico para receitas em texto corrido (sem cabeçalhos)
-- fallback de leitura de PDF com extrator Python embarcado (`lib/pypdf_vendor`)
-- prévia dupla: `Prévia fiel (PDF)` e `Prévia rápida (HTML)`
-- reaproveitamento de cache entre prévia e geração final (evita reprocessar quando nada mudou)
-- botão para aplicar no editor as receitas consolidadas vindas da prévia/importação
-- importação automática por upload (`txt`, `md`, `html`, `docx`, `pdf`, `mp3`, `wav`, `m4a`, `ogg`, `mp4`, `mpeg`, `webm`, `mkv`)
-- importação automática por link público de pasta Google Drive (com subpastas)
-- laboratório de transcrição com Whisper (áudio e vídeo)
-- exportação direta de transcrição em `TXT`, `SRT`, `VTT` e `Lipsync JSON`
-- proteção de memória para `verbose_json` com streaming em arquivo temporário
-- exportação em `HTML`
-- exportação em `PDF` com `dompdf` embutido no plugin
+## Principais recursos
+
+- tela admin `PDF Ebook Studio` no WordPress
+- gestão de projetos e clientes (salvar, carregar, excluir)
+- editor em seções: `Projetos`, `Capa/Tema`, `Importação`, `Categorias`, `Itens`, `Extras`, `Transcrição`, `Exportar`
+- **conteúdo educacional como padrão**: campos de Duração, Nível, Conteúdo, Pontos-chave e Resumo
+- classificação inteligente na importação (receitas somente com marcadores explícitos)
+- detecção e correção automática de encoding UTF-8 (ISO-8859-1, Windows-1252)
+- OCR integrado para PDFs baseados em imagem (Tesseract + poppler-utils)
+- editor estruturado com sync bidirecional do campo bruto (`---`)
+- drag-and-drop de itens e categorias
+- categorias/módulos com `nome + subtítulo + imagem` para páginas divisórias
+- importação por upload (`txt`, `md`, `html`, `docx`, `pdf`, `pptx`, `mp3`, `wav`, `m4a`, `ogg`, `mp4`, `mpeg`, `webm`, `mkv`)
+- importação por pasta pública do Google Drive (com subpastas)
+- auditoria de importação (resumo + status por arquivo)
+- prévia dupla (`Prévia fiel (PDF)` e `Prévia rápida (HTML)`)
+- geração final `HTML` e `PDF` (`dompdf`)
+
+## Layout educacional do PDF
+
+O ebook gerado inclui:
+
+- **Capa** com imagem, título, subtítulo e autor
+- **Sumário** automático com categorias/módulos
+- **Apresentação** e **Destaques** (dicas de estudo)
+- **Páginas divisórias** por módulo/categoria (full-page com imagem e numeral romano)
+- **Páginas de conteúdo** com:
+  - imagem hero opcional
+  - barra de metadados (duração, nível)
+  - descrição em destaque
+  - corpo com suporte a subtítulos (`##`) e citações (`>`)
+  - caixa de pontos-chave
+  - card de resumo
+  - nota do autor
+- **Dicas finais** e **Sobre o Autor**
+- 5 temas visuais: Clássico, Grafite Dourado, Azul Mineral, Terracota Moderna, Oliva & Areia
+
+## Transcrição (Whisper)
+
+- laboratório de transcrição no admin (`Laboratório de Transcrição`)
+- saída em `TXT`, `SRT`, `VTT` e `Lipsync JSON`
+- streaming de resposta `verbose_json` em arquivo temporário (proteção de memória)
+- arquivos longos (> 15 min) são segmentados e processados em lote
+- merge final com correção de offset temporal para `SRT/VTT/Lipsync`
+- **retomada real após falha**:
+  - estado salvo por `resume_token`
+  - botão `Retomar da parte N` no painel
+  - checkpoints por parte concluída
+  - prévia agregada contínua durante o processamento
+
+### Endpoint padrão
+
+- API: `https://transcrever.rente.com.br/v1/audio/transcriptions`
+- Landing: `https://transcrever.rente.com.br/`
 
 ## Estrutura
 
@@ -36,39 +67,61 @@ Versão atual (v0.4.1):
 plugin-pdf-wordpress/
   ├─ plugin-pdf-wordpress.php
   ├─ includes/
+  │   ├─ class-pdfw-admin-page.php
+  │   ├─ class-pdfw-renderer.php
+  │   └─ class-pdfw-ingestor.php
   ├─ templates/
+  │   └─ admin-page.php
   ├─ assets/
+  │   ├─ css/admin.css
+  │   └─ js/admin.js
+  ├─ lib/pypdf_vendor/
+  │   └─ pdf_extract.py (extração de texto + OCR)
   └─ docs/
 ```
 
-## Instalação local
+## Instalação
 
-1. Clone o repositório:
+1. Clone:
 
 ```bash
 git clone https://github.com/rentemkt/plugin-pdf-wordpress.git
 ```
 
-2. Compacte a pasta e instale em `wp-admin > Plugins > Adicionar novo > Enviar plugin`.
+2. Compacte a pasta e instale em:
+`wp-admin > Plugins > Adicionar novo > Enviar plugin`.
 
-## Uso
+### OCR (opcional)
 
-1. Abra `PDF Ebook Studio` no menu lateral do WordPress.
-2. Defina `Nome do projeto` e opcionalmente `Cliente`.
-3. Preencha/importe o conteúdo e use `Salvar projeto`.
-4. Gere `Prévia fiel (PDF)` para validar paginação.
-5. Se necessário, clique em `Aplicar receitas importadas da prévia`, ajuste no editor e salve.
-6. Clique em `Baixar PDF` ou `Gerar HTML`.
+Para importar PDFs baseados em imagem, o container WordPress precisa de:
+
+```bash
+apt-get install -y tesseract-ocr tesseract-ocr-por poppler-utils python3
+```
+
+Ou use a imagem Docker customizada `wordpress-ocr:latest` que já inclui essas dependências.
+
+## Fluxo rápido de uso
+
+1. Abra `PDF Ebook Studio` no WordPress.
+2. Crie/selecione projeto.
+3. Importe conteúdo (upload de PDFs ou pasta do Drive).
+4. Organize categorias/módulos na aba `Categorias`.
+5. Revise e edite itens na aba `Itens` (campos educacionais ou receita).
+6. Gere `Prévia fiel (PDF)`.
+7. Exporte `PDF` ou `HTML`.
+
+## Continuidade para outros LLMs
+
+Arquivos para handoff e continuidade:
+
+- `docs/LLM-HANDOFF.md` (guia operacional + estado atual)
+- `docs/llm-context.json` (resumo técnico estruturado)
+- `docs/ROADMAP.md` (pendências e próximos passos)
 
 ## Observações
 
-- Sem `dompdf`, o botão de PDF mostra aviso no painel.
-- O editor estruturado de receitas sincroniza automaticamente com o campo bruto (`---`).
-- Importação do Google Drive requer pasta pública (link compartilhável).
-- A varredura de subpastas do Drive é limitada (profundidade 4 e até 80 arquivos).
-- Próximas fases (parser DOCX/PDF, QA e automações) estão em `docs/ROADMAP.md`.
-
-## Referência de UX
-
-- Cópia de referência do editor legado (somente leitura): `reference/ebook-pdf/`.
-- Origem da cópia: `/home/iheri/ebook/pdf` (não alterado).
+- sem `dompdf`, o botão de PDF exibe aviso no painel
+- importação do Drive exige pasta pública
+- varredura de subpastas do Drive: profundidade 4, até 80 arquivos
+- receitas legado continuam funcionando (branch de renderização separado)

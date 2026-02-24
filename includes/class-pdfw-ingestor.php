@@ -1447,7 +1447,7 @@ class PDFW_Ingestor
         }
 
         if (self::should_skip_by_name($name)) {
-            $logs[] = "Arquivo não-receita ignorado: {$name}";
+            $logs[] = "Arquivo ignorado: {$name}";
             return [
                 'recipes' => [],
                 'image_entry' => null,
@@ -1455,7 +1455,7 @@ class PDFW_Ingestor
                     'name' => $name,
                     'kind' => 'skip',
                     'recipes_count' => 0,
-                    'note' => 'Arquivo não-receita ignorado',
+                    'note' => 'Arquivo ignorado',
                 ],
             ];
         }
@@ -1621,7 +1621,7 @@ class PDFW_Ingestor
                         'name' => $download['name'],
                         'kind' => 'skip',
                         'recipes_count' => 0,
-                        'note' => 'Arquivo não-receita ignorado',
+                        'note' => 'Arquivo ignorado',
                     ];
                     $count++;
                     continue;
@@ -1637,9 +1637,8 @@ class PDFW_Ingestor
                     $first_recipe = is_array($recipes_from_file[0] ?? null) ? $recipes_from_file[0] : [];
                     $is_generic = ! empty($first_recipe['isGeneric']) || ! empty($first_recipe['is_generic']);
                     $kind = $is_generic ? 'generic' : 'recipe';
-                    $note = $is_generic
-                        ? (count($recipes_from_file) === 1 ? '1 item genérico importado' : (count($recipes_from_file) . ' itens genéricos importados'))
-                        : (count($recipes_from_file) === 1 ? '1 receita importada' : (count($recipes_from_file) . ' receitas importadas'));
+                    $c = count($recipes_from_file);
+                    $note = $c === 1 ? '1 item importado' : ($c . ' itens importados');
                     $recipes = array_merge($recipes, $recipes_from_file);
                     $imported_files++;
                     $audit_items[] = [
@@ -1655,7 +1654,7 @@ class PDFW_Ingestor
                         'name' => $download['name'],
                         'kind' => 'skip',
                         'recipes_count' => 0,
-                        'note' => 'Sem receita detectada',
+                        'note' => 'Sem conteúdo detectado',
                     ];
                 }
             }
@@ -1739,7 +1738,7 @@ class PDFW_Ingestor
                     'name' => $name,
                     'kind' => 'skip',
                     'recipes_count' => 0,
-                    'note' => 'Arquivo não-receita ignorado',
+                    'note' => 'Arquivo ignorado',
                 ],
             ];
         }
@@ -1816,10 +1815,10 @@ class PDFW_Ingestor
         if ($count > 0) {
             if ($is_generic) {
                 $kind = 'generic';
-                $note = $count === 1 ? '1 item genérico importado' : ($count . ' itens genéricos importados');
+                $note = $count === 1 ? '1 item importado' : ($count . ' itens importados');
             } else {
                 $kind = 'recipe';
-                $note = $count === 1 ? '1 receita importada' : ($count . ' receitas importadas');
+                $note = $count === 1 ? '1 item importado' : ($count . ' itens importados');
             }
         }
 
@@ -2187,22 +2186,31 @@ class PDFW_Ingestor
     private static function classify_text_content(string $text, string $name, array &$logs): array
     {
         $fallback_title = pathinfo($name, PATHINFO_FILENAME);
-        $recipes = self::extract_recipes_from_text($text, $fallback_title);
-        if ($recipes) {
-            return [
-                'recipes' => $recipes,
-                'kind' => 'recipe',
-                'note' => count($recipes) === 1 ? '1 receita importada' : (count($recipes) . ' receitas importadas'),
-            ];
+
+        // Only try recipe extraction if text has BOTH "ingredientes" AND "modo de preparo"
+        $has_recipe_markers = (bool) preg_match('/\\bingredientes?\\b/iu', $text)
+            && (bool) preg_match('/\\bmodo\\s+de\\s+preparo\\b/iu', $text);
+
+        if ($has_recipe_markers) {
+            $recipes = self::extract_recipes_from_text($text, $fallback_title);
+            if ($recipes) {
+                return [
+                    'recipes' => $recipes,
+                    'kind' => 'recipe',
+                    'note' => count($recipes) === 1 ? '1 receita importada' : (count($recipes) . ' receitas importadas'),
+                ];
+            }
         }
 
-        $recipes = self::extract_generic_content($text, $fallback_title);
-        if ($recipes) {
-            $logs[] = "Conteúdo genérico detectado em: {$name}";
+        // Default: treat as educational/generic content
+        $items = self::extract_generic_content($text, $fallback_title);
+        if ($items) {
+            $logs[] = "Conteúdo importado: {$name}";
+            $c = count($items);
             return [
-                'recipes' => $recipes,
+                'recipes' => $items,
                 'kind' => 'generic',
-                'note' => count($recipes) === 1 ? '1 item genérico importado' : (count($recipes) . ' itens genéricos importados'),
+                'note' => $c === 1 ? '1 item importado' : ($c . ' itens importados'),
             ];
         }
 
@@ -2774,7 +2782,8 @@ class PDFW_Ingestor
         $output = '';
 
         foreach ($python_binaries as $python_bin) {
-            $cmd = escapeshellarg($python_bin) . ' ' . escapeshellarg($script) . ' ' . escapeshellarg($tmp) . ' 2>/dev/null';
+            // mode 'auto': tries pypdf text first, falls back to OCR for image-based PDFs
+            $cmd = escapeshellarg($python_bin) . ' ' . escapeshellarg($script) . ' ' . escapeshellarg($tmp) . ' auto 2>/dev/null';
             $result = shell_exec($cmd);
             if (is_string($result) && trim($result) !== '') {
                 $output = $result;
@@ -2787,7 +2796,7 @@ class PDFW_Ingestor
         }
 
         if ($output !== '') {
-            $logs[] = 'PDF lido com fallback Python embarcado.';
+            $logs[] = 'PDF lido com Python (texto + OCR automático).';
         }
 
         return $output;
@@ -2882,6 +2891,17 @@ class PDFW_Ingestor
 
     private static function normalize_text(string $text): string
     {
+        // Fix encoding: detect and convert to UTF-8 if needed
+        if (function_exists('mb_detect_encoding')) {
+            $detected = mb_detect_encoding($text, ['UTF-8', 'ISO-8859-1', 'Windows-1252'], true);
+            if ($detected !== false && $detected !== 'UTF-8') {
+                $converted = mb_convert_encoding($text, 'UTF-8', $detected);
+                if (is_string($converted) && $converted !== '') {
+                    $text = $converted;
+                }
+            }
+        }
+
         $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
         $text = preg_replace("/\\r\\n?/", "\n", $text);
         $text = preg_replace("/[\\t\\x{00A0}]+/u", ' ', (string) $text);
@@ -2911,9 +2931,16 @@ class PDFW_Ingestor
             return [];
         }
 
+        // Strip BOM/invisible chars from all lines before any processing
+        $lines = array_map(static function ($line) {
+            return preg_replace('/[\x{FEFF}\x{200B}\x{200C}\x{200D}\x{00AD}]/u', '', $line) ?? $line;
+        }, $lines);
+
         $title = self::pick_title($lines, $fallback_title);
+        $title = preg_replace('/[\x{FEFF}\x{200B}\x{200C}\x{200D}\x{00AD}]/u', '', $title) ?? $title;
+
         $ing_idx = self::find_line_index($lines, '/\\bingredientes?\\b/iu');
-        $prep_idx = self::find_line_index($lines, '/\\b(modo\\s+de\\s+preparo|modo\\s+de\\s+fazer|preparo)\\b/iu');
+        $prep_idx = self::find_line_index($lines, '/\\b(modo\\s+de\\s+(preparo|fazer)|como\\s+preparar|preparo|passo\\s+a\\s+passo|instru[çc][õo]es)\\b/iu');
 
         if ($ing_idx < 0 || $prep_idx < 0 || $prep_idx <= $ing_idx) {
             $inline = self::extract_inline_recipe_from_lines($lines, $title);
@@ -2921,14 +2948,31 @@ class PDFW_Ingestor
         }
 
         $ingredients = [];
+        $steps = [];
+        $switched_to_steps = false;
         for ($i = $ing_idx + 1; $i < $prep_idx; $i++) {
-            $item = self::clean_item($lines[$i]);
-            if ($item !== '' && ! self::looks_like_heading($item)) {
-                $ingredients[] = $item;
+            $raw_line = trim($lines[$i]);
+            if ($raw_line === '') {
+                continue;
+            }
+            // Detect prep sub-sections that got mixed into ingredients
+            if (preg_match('/^(modo\\s+de\\s+(preparo|fazer)|como\\s+preparar|preparo|passo\\s+a\\s+passo|instru[çc][õo]es|massa|recheio|montagem|cobertura)\\s*:?\\s*$/iu', $raw_line)) {
+                $switched_to_steps = true;
+                if (preg_match('/^(massa|recheio|montagem|cobertura)\\s*:?\\s*$/iu', $raw_line)) {
+                    $steps[] = '--- ' . trim($raw_line) . ' ---';
+                }
+                continue;
+            }
+            if ($switched_to_steps) {
+                $steps[] = self::clean_item($raw_line);
+            } else {
+                $item = self::clean_item($raw_line);
+                if ($item !== '' && ! self::looks_like_heading($item)) {
+                    $ingredients[] = $item;
+                }
             }
         }
 
-        $steps = [];
         $tip = '';
         for ($i = $prep_idx + 1, $n = count($lines); $i < $n; $i++) {
             $line = trim($lines[$i]);
@@ -2953,7 +2997,7 @@ class PDFW_Ingestor
             return $x !== '';
         }));
 
-        if (! $ingredients || ! $steps) {
+        if (! $ingredients && ! $steps) {
             return [];
         }
 
@@ -2995,22 +3039,85 @@ class PDFW_Ingestor
             $body_lines = array_slice($lines, 1);
         }
 
-        $body = trim(implode("\n", $body_lines));
+        // Extract educational headers from body lines
+        $duration = '';
+        $level = '';
+        $key_points = [];
+        $summary = '';
+        $tip = '';
+        $content_lines = [];
+        $section = 'body';
+
+        foreach ($body_lines as $line) {
+            $trimmed = trim($line);
+            if (preg_match('/^dura(?:c|ç)(?:a|ã)o\\s*:?\\s*(.+)$/iu', $trimmed, $m)) {
+                $duration = trim($m[1]);
+                continue;
+            }
+            if (preg_match('/^n(?:i|í)vel\\s*:?\\s*(.+)$/iu', $trimmed, $m)) {
+                $level = trim($m[1]);
+                continue;
+            }
+            if (preg_match('/^pontos?[- ]chave\\s*:?\\s*(.*)$/iu', $trimmed, $m)) {
+                $section = 'keypoints';
+                $kp = trim($m[1] ?? '');
+                if ($kp !== '') {
+                    $key_points[] = $kp;
+                }
+                continue;
+            }
+            if (preg_match('/^resumo\\s*:?\\s*(.+)$/iu', $trimmed, $m)) {
+                $summary = trim($m[1]);
+                $section = 'summary';
+                continue;
+            }
+            if (preg_match('/^dica\\s*:?\\s*(.*)$/iu', $trimmed, $m)) {
+                $section = 'tip';
+                $t = trim($m[1] ?? '');
+                if ($t !== '') {
+                    $tip = $t;
+                }
+                continue;
+            }
+
+            if ($section === 'keypoints') {
+                $key_points[] = ltrim(preg_replace('/^[-*]\\s*/', '', $trimmed) ?? $trimmed);
+            } elseif ($section === 'summary') {
+                $summary = trim($summary . ' ' . $trimmed);
+            } elseif ($section === 'tip') {
+                $tip = trim($tip . ' ' . $trimmed);
+            } else {
+                $content_lines[] = $trimmed;
+            }
+        }
+
+        $body = trim(implode("\n", $content_lines));
         if ($body === '') {
             $body = $text;
+        }
+
+        // Use first ~200 chars as description if body is longer
+        $description = $body;
+        if (mb_strlen($body) > 200) {
+            $description = mb_substr($body, 0, 200) . '…';
         }
 
         return [[
             'title' => $title,
             'category' => 'Geral',
-            'description' => $body,
+            'description' => $description,
+            'body' => $body,
+            'duration' => $duration,
+            'level' => $level,
+            'keyPoints' => array_values(array_filter($key_points, static function ($v) { return trim($v) !== ''; })),
+            'summary' => $summary,
             'tempo' => '',
             'porcoes' => '',
             'dificuldade' => '',
             'image' => '',
             'ingredients' => [],
             'steps' => [],
-            'tip' => '',
+            'tip' => $tip,
             'nutrition' => [
                 'kcal' => '',
                 'carb' => '',
@@ -3215,7 +3322,7 @@ class PDFW_Ingestor
 
     private static function looks_like_heading(string $line): bool
     {
-        return (bool) preg_match('/^(ingredientes?|modo\\s+de\\s+preparo|preparo|dicas?)\\s*:?$/iu', $line);
+        return (bool) preg_match('/^(ingredientes?|modo\\s+de\\s+(preparo|fazer)|como\\s+preparar|preparo|passo\\s+a\\s+passo|instru[çc][õo]es|dicas?)\\s*:?$/iu', $line);
     }
 
     private static function is_break_heading(string $line): bool
@@ -3315,6 +3422,13 @@ class PDFW_Ingestor
             }
         }
 
+        $compressed = self::compress_image_blob($content, $mime);
+        if (strlen($compressed) < strlen($content)) {
+            $content = $compressed;
+            $mime = 'image/jpeg';
+        }
+
+        $content_size = strlen($content);
         self::register_inline_image_usage($content_size);
 
         return [
@@ -3324,6 +3438,41 @@ class PDFW_Ingestor
             'src' => 'data:' . $mime . ';base64,' . base64_encode($content),
             'is_cover_hint' => self::is_cover_image_name($name),
         ];
+    }
+
+    private static function compress_image_blob(string $content, string $mime, int $max_width = 1200, int $max_height = 900, int $quality = 80): string
+    {
+        if (!function_exists('imagecreatefromstring')) {
+            return $content;
+        }
+        $src = @imagecreatefromstring($content);
+        if ($src === false) {
+            return $content;
+        }
+        $orig_w = imagesx($src);
+        $orig_h = imagesy($src);
+        if ($orig_w <= $max_width && $orig_h <= $max_height && strlen($content) < 150000) {
+            imagedestroy($src);
+            return $content;
+        }
+        $ratio = min($max_width / $orig_w, $max_height / $orig_h, 1.0);
+        $new_w = (int) round($orig_w * $ratio);
+        $new_h = (int) round($orig_h * $ratio);
+        $dst = imagecreatetruecolor($new_w, $new_h);
+        if ($dst === false) {
+            imagedestroy($src);
+            return $content;
+        }
+        imagecopyresampled($dst, $src, 0, 0, 0, 0, $new_w, $new_h, $orig_w, $orig_h);
+        imagedestroy($src);
+        ob_start();
+        imagejpeg($dst, null, $quality);
+        $compressed = ob_get_clean();
+        imagedestroy($dst);
+        if ($compressed === false || strlen($compressed) >= strlen($content)) {
+            return $content;
+        }
+        return $compressed;
     }
 
     private static function guess_image_mime(string $ext, string $content): string

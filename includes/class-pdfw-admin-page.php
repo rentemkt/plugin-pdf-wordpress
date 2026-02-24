@@ -715,6 +715,9 @@ class PDFW_Admin_Page
         ];
         $this->save_projects_store($projects_store);
 
+        // Sync last_payload so page reload reflects the saved project
+        update_option(self::OPTION_KEY, $payload, false);
+
         wp_send_json_success([
             'project_id' => $project_id,
             'project' => $projects_store[$project_id],
@@ -1425,7 +1428,40 @@ class PDFW_Admin_Page
                 || $porcoes !== ''
                 || $dificuldade !== '';
 
-            if (! $is_generic_flag && $has_recipe_data) {
+            // Educational fields
+            $edu_duration = trim((string) ($recipe['duration'] ?? ''));
+            $edu_level = trim((string) ($recipe['level'] ?? ''));
+            $edu_body = trim((string) ($recipe['body'] ?? ''));
+            $edu_summary = trim((string) ($recipe['summary'] ?? ''));
+            $edu_key_points = is_array($recipe['keyPoints'] ?? null) ? $recipe['keyPoints'] : [];
+
+            if ($is_generic_flag || ! $has_recipe_data) {
+                // Serialize educational fields
+                if ($edu_duration !== '') {
+                    $block[] = 'Duração: ' . $edu_duration;
+                }
+                if ($edu_level !== '') {
+                    $block[] = 'Nível: ' . $edu_level;
+                }
+                if ($edu_body !== '') {
+                    $block[] = '';
+                    $block[] = $edu_body;
+                }
+                if ($edu_key_points) {
+                    $block[] = '';
+                    $block[] = 'Pontos-chave:';
+                    foreach ($edu_key_points as $kp) {
+                        $kp_text = trim((string) $kp);
+                        if ($kp_text !== '') {
+                            $block[] = '- ' . $kp_text;
+                        }
+                    }
+                }
+                if ($edu_summary !== '') {
+                    $block[] = '';
+                    $block[] = 'Resumo: ' . $edu_summary;
+                }
+            } else {
                 $block[] = 'Ingredientes:';
                 if ($ingredients) {
                     $block = array_merge($block, $ingredients);
