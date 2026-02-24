@@ -14,7 +14,7 @@ class PDFW_Ingestor
     private const IMAGE_INLINE_MAX_COUNT = 16;
     private const IMAGE_INLINE_TOTAL_BYTES = 6 * 1024 * 1024;
     private const TEMP_IMAGE_TTL = 604800;
-    private const TRANSCRIBE_TIMEOUT = 600;
+    private const TRANSCRIBE_TIMEOUT = 900;
     private const MAX_TRANSCRIBE_RESPONSE_BYTES = 32 * 1024 * 1024;
     private const TRANSCRIBE_STREAM_CHUNK_BYTES = 65536;
     private const CHUNK_TRIGGER_SECONDS = 900.0;
@@ -211,7 +211,8 @@ class PDFW_Ingestor
             'lipsync_json' => '',
         ];
 
-        $verbose_raw = self::transcribe_audio($file_path, $logs, 'verbose_json', true);
+        // Single API call — build all formats from verbose_json
+        $verbose_raw = self::transcribe_audio($file_path, $logs, 'verbose_json', false);
         if ($verbose_raw !== '') {
             $verbose_decoded = json_decode($verbose_raw, true);
             if (is_array($verbose_decoded)) {
@@ -219,21 +220,94 @@ class PDFW_Ingestor
                     $outputs['text'] = self::normalize_text((string) $verbose_decoded['text']);
                 }
                 $outputs['lipsync_json'] = self::build_lipsync_payload($verbose_decoded, $outputs['text']);
+
+                // Build SRT and VTT from segments (avoids extra API calls)
+                $segments = is_array($verbose_decoded['segments'] ?? null) ? $verbose_decoded['segments'] : [];
+                if ($segments) {
+                    $outputs['srt'] = self::build_srt_from_segments($segments);
+                    $outputs['vtt'] = self::build_vtt_from_segments($segments);
+                }
             }
         }
 
+        // Fallback: text-only call if verbose_json failed
         if ($outputs['text'] === '') {
             $outputs['text'] = self::transcribe_audio($file_path, $logs, 'text');
         }
-
-        $outputs['srt'] = self::transcribe_audio($file_path, $logs, 'srt', true);
-        $outputs['vtt'] = self::transcribe_audio($file_path, $logs, 'vtt', true);
 
         if ($outputs['lipsync_json'] === '') {
             $outputs['lipsync_json'] = self::build_lipsync_payload([], $outputs['text']);
         }
 
         return $outputs;
+    }
+
+    /**
+     * Build SRT subtitle string from verbose_json segments.
+     *
+     * @param list<array{start?: float, end?: float, text?: string}> $segments
+     */
+    private static function build_srt_from_segments(array $segments): string
+    {
+        $lines = [];
+        $index = 1;
+        foreach ($segments as $seg) {
+            if (! is_array($seg)) {
+                continue;
+            }
+            $text = trim((string) ($seg['text'] ?? ''));
+            if ($text === '') {
+                continue;
+            }
+            $start = (float) ($seg['start'] ?? 0.0);
+            $end = (float) ($seg['end'] ?? $start + 1.0);
+            $lines[] = $index . "\n" . self::format_srt_time($start) . ' --> ' . self::format_srt_time($end) . "\n" . $text;
+            $index++;
+        }
+        return implode("\n\n", $lines);
+    }
+
+    /**
+     * Build VTT subtitle string from verbose_json segments.
+     *
+     * @param list<array{start?: float, end?: float, text?: string}> $segments
+     */
+    private static function build_vtt_from_segments(array $segments): string
+    {
+        $lines = ["WEBVTT\n"];
+        foreach ($segments as $seg) {
+            if (! is_array($seg)) {
+                continue;
+            }
+            $text = trim((string) ($seg['text'] ?? ''));
+            if ($text === '') {
+                continue;
+            }
+            $start = (float) ($seg['start'] ?? 0.0);
+            $end = (float) ($seg['end'] ?? $start + 1.0);
+            $lines[] = self::format_vtt_time($start) . ' --> ' . self::format_vtt_time($end) . "\n" . $text;
+        }
+        return implode("\n\n", $lines);
+    }
+
+    /**
+     * Format seconds as SRT timestamp: HH:MM:SS,mmm
+     */
+    private static function format_srt_time(float $seconds): string
+    {
+        $h = (int) floor($seconds / 3600);
+        $m = (int) floor(fmod($seconds, 3600) / 60);
+        $s = (int) floor(fmod($seconds, 60));
+        $ms = (int) round(fmod($seconds, 1) * 1000);
+        return sprintf('%02d:%02d:%02d,%03d', $h, $m, $s, $ms);
+    }
+
+    /**
+     * Format seconds as VTT timestamp: HH:MM:SS.mmm
+     */
+    private static function format_vtt_time(float $seconds): string
+    {
+        return str_replace(',', '.', self::format_srt_time($seconds));
     }
 
     /**
@@ -656,7 +730,7 @@ class PDFW_Ingestor
             return [];
         }
 
-        if (preg_match_all('/silence_end:\s*([0-9]+(?:\.[0-9]+)?)/i', $raw, $matches) !== 1) {
+        if (preg_match_all('/silence_end:\s*([0-9]+(?:\.[0-9]+)?)/i', $raw, $matches) < 1) {
             return [];
         }
 
@@ -2223,7 +2297,7 @@ class PDFW_Ingestor
 
         $payload = [
             'file' => $curl_file,
-            'model' => 'medium',
+            'model' => 'Zoont/faster-whisper-large-v3-turbo-int8-ct2',
             'language' => 'pt',
             'response_format' => $response_format,
         ];
