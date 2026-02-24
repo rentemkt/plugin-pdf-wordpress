@@ -1,0 +1,71 @@
+.pdfw-wrap {
+  max-width: 1280px;
+}
+
+.pdfw-wrap h1 {
+  margin-bottom: 6px;
+}
+
+.pdfw-wrap .description {
+  margin-bottom: 16px;
+}
+
+.pdfw-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.pdfw-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.pdfw-card {
+  background: #fff;
+  border: 1px solid #dcdcde;
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.pdfw-card h2 {
+  margin-top: 0;
+  margin-bottom: 10px;
+}
+
+.pdfw-card label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.pdfw-card input[type="text"],
+.pdfw-card select,
+.pdfw-card textarea {
+  width: 100%;
+  margin-top: 4px;
+  border-radius: 6px;
+}
+
+.pdfw-card textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  line-height: 1.45;
+}
+
+.pdfw-card .hint {
+  margin-top: 0;
+  color: #646970;
+}
+
+.pdfw-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+@media (max-width: 1100px) {
+  .pdfw-grid {
+    grid-template-columns: 1fr;
+  }
+}

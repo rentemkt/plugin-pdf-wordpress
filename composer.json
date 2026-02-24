@@ -1,0 +1,11 @@
+{
+  "name": "rentemkt/plugin-pdf-wordpress",
+  "description": "Plugin WordPress para gerar ebook em HTML/PDF com temas visuais.",
+  "type": "wordpress-plugin",
+  "require": {
+    "dompdf/dompdf": "^2.0"
+  },
+  "config": {
+    "sort-packages": true
+  }
+}
