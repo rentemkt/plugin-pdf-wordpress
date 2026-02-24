@@ -557,6 +557,13 @@ class PDFW_Admin_Page
         $payload = $this->collect_payload_from_request();
         update_option(self::OPTION_KEY, $payload, false);
 
+        // Warn if user has pending file uploads
+        if ($this->has_pending_uploads()) {
+            set_transient(self::NOTICE_KEY, 'Arquivos pendentes detectados. Importe o conteúdo primeiro na aba Importação antes de gerar o PDF.', 90);
+            wp_safe_redirect(admin_url('admin.php?page=pdfw-studio'));
+            exit;
+        }
+
         $cached = $this->get_cached_html_if_valid($payload);
         if (is_array($cached)) {
             $html = (string) ($cached['html'] ?? '');
@@ -608,10 +615,20 @@ class PDFW_Admin_Page
             $preview_mode = 'pdf';
         }
 
+        // Warn if user has pending file uploads
+        $pending_notice = '';
+        if ($this->has_pending_uploads()) {
+            $pending_notice = 'Arquivos pendentes detectados. Importe o conteúdo primeiro na aba Importação.';
+        }
+
         $prepared = $this->prepare_render_data($payload, false);
         $prepared_payload = $prepared['payload'];
         $html = PDFW_Renderer::render($prepared_payload, $prepared['recipes']);
-        $cache_key = $this->save_preview_cache($prepared_payload, $html, (string) $prepared['notice']);
+        $notice = (string) $prepared['notice'];
+        if ($pending_notice !== '') {
+            $notice = $pending_notice . ($notice !== '' ? "\n" . $notice : '');
+        }
+        $cache_key = $this->save_preview_cache($prepared_payload, $html, $notice);
 
         $slug = sanitize_title((string) ($prepared_payload['title'] ?? 'ebook'));
         if ($slug === '') {
@@ -620,7 +637,7 @@ class PDFW_Admin_Page
 
         $response = [
             'filename' => $slug . '.pdf',
-            'notice' => (string) $prepared['notice'],
+            'notice' => $notice,
             'preview_mode' => $preview_mode,
             'cache_key' => $cache_key,
             'prepared_recipes_raw' => $this->recipes_to_raw($prepared['recipes']),
@@ -820,6 +837,22 @@ class PDFW_Admin_Page
         ];
     }
 
+    private function has_pending_uploads(): bool
+    {
+        $files = $_FILES['source_files'] ?? null;
+        if (! is_array($files) || empty($files['name'])) {
+            return false;
+        }
+        $names = is_array($files['name']) ? $files['name'] : [];
+        $errors = is_array($files['error'] ?? null) ? $files['error'] : [];
+        foreach ($names as $idx => $name) {
+            if ((string) $name !== '' && (int) ($errors[$idx] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private function sanitize_image_source(string $value): string
     {
         $value = trim($value);
@@ -827,6 +860,10 @@ class PDFW_Admin_Page
             return '';
         }
         if (strpos($value, 'data:image/') === 0) {
+            // Reject data URIs larger than 4 MB to prevent bloated payloads
+            if (strlen($value) > 4 * 1024 * 1024) {
+                return '';
+            }
             return $value;
         }
         if (strpos($value, 'file://') === 0 || strpos($value, '/') === 0) {
@@ -1336,11 +1373,19 @@ class PDFW_Admin_Page
                 continue;
             }
 
+            $tmp_names = isset($files['tmp_name']) && is_array($files['tmp_name']) ? $files['tmp_name'] : [];
+            $tmp = isset($tmp_names[$index]) ? (string) $tmp_names[$index] : '';
+            $content_hash = '';
+            if ($tmp !== '' && is_uploaded_file($tmp)) {
+                $content_hash = hash_file('sha256', $tmp) ?: '';
+            }
+
             $signature[] = [
                 'name' => sanitize_file_name((string) $name),
                 'type' => sanitize_mime_type((string) ($types[$index] ?? '')),
                 'size' => isset($sizes[$index]) ? (int) $sizes[$index] : 0,
                 'error' => $error,
+                'hash' => $content_hash,
             ];
         }
 

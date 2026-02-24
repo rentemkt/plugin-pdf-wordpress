@@ -122,7 +122,7 @@
               <label>Link da pasta pública do Google Drive
                 <input type="url" name="drive_folder_url" value="<?php echo esc_attr((string) ($payload['drive_folder_url'] ?? '')); ?>" placeholder="https://drive.google.com/drive/folders/...">
               </label>
-              <p class="hint">Importa subpastas automaticamente (até 4 níveis) e processa em lote para evitar timeout.</p>
+              <p class="hint">Importa subpastas automaticamente (até 4 níveis). Funcionalidade experimental — o Google pode alterar a estrutura a qualquer momento.</p>
               <label>Servidor Whisper
                 <select id="pdfw-whisper-preset" style="margin-top:4px;">
                   <option value="online">Online (VPS)</option>

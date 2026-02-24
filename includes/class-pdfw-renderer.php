@@ -128,7 +128,7 @@ class PDFW_Renderer
             $recipe_sections_html .= '<div class="' . $category_class . '">'
                 . $category_media_html
                 . '<div class="category-divider-num">' . self::h($roman) . '</div>'
-                . '<h2>' . self::h(mb_strtoupper((string) $category['title'], 'UTF-8')) . '</h2>'
+                . '<h2>' . self::h(pdfw_mb_strtoupper((string) $category['title'], 'UTF-8')) . '</h2>'
                 . '<p class="category-divider-sub">' . self::h((string) $category['subtitle']) . '</p>'
                 . '</div>';
 
@@ -293,7 +293,7 @@ class PDFW_Renderer
         }
 
         $year = gmdate('Y');
-        $author_logo = self::h(mb_strtoupper($author_raw, 'UTF-8'));
+        $author_logo = self::h(pdfw_mb_strtoupper($author_raw, 'UTF-8'));
 
         return <<<HTML
 <!DOCTYPE html>
@@ -516,7 +516,7 @@ HTML;
                 continue;
             }
 
-            $normalized = mb_strtolower($title, 'UTF-8');
+            $normalized = pdfw_mb_strtolower($title, 'UTF-8');
             $key = sanitize_title(remove_accents($normalized));
             $score = self::recipe_total_score($recipe);
 
@@ -734,7 +734,7 @@ HTML;
             ];
 
             foreach ($lines as $line) {
-                $low = mb_strtolower($line);
+                $low = pdfw_mb_strtolower($line);
                 if (preg_match('/^categoria\s*:?\s*(.+)$/iu', $line, $match) === 1) {
                     $candidate = trim((string) ($match[1] ?? ''));
                     if ($candidate !== '') {
@@ -948,7 +948,7 @@ HTML;
                 continue;
             }
 
-            if (mb_strlen($line) > 120 && (strpos($line, '.') !== false || strpos($line, ';') !== false)) {
+            if (pdfw_mb_strlen($line) > 120 && (strpos($line, '.') !== false || strpos($line, ';') !== false)) {
                 $parts = preg_split('/(?<=[\\.!?;])\\s+/u', $line) ?: [];
                 foreach ($parts as $part) {
                     $piece = trim((string) $part);
@@ -1253,7 +1253,7 @@ HTML;
         if ($name === '') {
             return '';
         }
-        return sanitize_title(remove_accents(mb_strtolower($name, 'UTF-8')));
+        return sanitize_title(remove_accents(pdfw_mb_strtolower($name, 'UTF-8')));
     }
 
     private static function format_category_subtitle(string $custom_subtitle, int $count): string
@@ -1353,7 +1353,7 @@ HTML;
             return $custom_description;
         }
 
-        $title_lc = mb_strtolower($title, 'UTF-8');
+        $title_lc = pdfw_mb_strtolower($title, 'UTF-8');
         if (strpos(self::normalize_for_match($title), 'biomassa') !== false) {
             return 'Receita com biomassa de banana verde, com foco em praticidade, saciedade e equilíbrio metabólico para o dia a dia.';
         }
@@ -1592,7 +1592,7 @@ HTML;
 
     private static function normalize_for_match(string $text): string
     {
-        $text = mb_strtolower($text, 'UTF-8');
+        $text = pdfw_mb_strtolower($text, 'UTF-8');
         $text = remove_accents($text);
         $text = preg_replace('/[^a-z0-9]+/u', ' ', $text);
         $text = preg_replace('/\\s+/u', ' ', (string) $text);
@@ -1616,7 +1616,7 @@ HTML;
         $tokens = [];
         foreach ($parts as $part) {
             $part = trim((string) $part);
-            if ($part === '' || mb_strlen($part) < 3) {
+            if ($part === '' || pdfw_mb_strlen($part) < 3) {
                 continue;
             }
             if (in_array($part, ['com', 'sem', 'para', 'de', 'da', 'do', 'dos', 'das', 'e'], true)) {

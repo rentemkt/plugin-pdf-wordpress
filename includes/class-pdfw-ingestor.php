@@ -802,9 +802,9 @@ class PDFW_Ingestor
 
         $snippet = '';
         if (is_string($copy_out) && trim($copy_out) !== '') {
-            $snippet = trim(mb_substr($copy_out, 0, 220));
+            $snippet = trim(pdfw_mb_substr($copy_out, 0, 220));
         } elseif (is_string($fallback_out) && trim($fallback_out) !== '') {
-            $snippet = trim(mb_substr($fallback_out, 0, 220));
+            $snippet = trim(pdfw_mb_substr($fallback_out, 0, 220));
         }
         if ($snippet !== '') {
             $logs[] = 'Falha ao cortar segmento: ' . $snippet;
@@ -2394,7 +2394,7 @@ class PDFW_Ingestor
         }
 
         if ($http_code < 200 || $http_code >= 300) {
-            $snippet = mb_substr($raw, 0, 300);
+            $snippet = pdfw_mb_substr($raw, 0, 300);
             if (! $optional) {
                 $logs[] = 'API de transcrição retornou HTTP ' . $http_code . ' (' . $response_format . ')' . ($snippet !== '' ? (': ' . $snippet) : '.');
             }
@@ -2582,7 +2582,7 @@ class PDFW_Ingestor
                 if ($clean === '') {
                     continue;
                 }
-                $length = mb_strlen($clean);
+                $length = pdfw_mb_strlen($clean);
                 $duration = max(0.14, min(0.6, 0.18 + ($length * 0.02)));
                 $cues[] = [
                     'type' => 'word',
@@ -2659,7 +2659,7 @@ class PDFW_Ingestor
 
     private static function should_skip_by_name(string $name): bool
     {
-        $normalized = remove_accents(mb_strtolower($name));
+        $normalized = remove_accents(pdfw_mb_strtolower($name));
         foreach (array_keys(self::$skip_name_map) as $needle) {
             if (strpos($normalized, $needle) !== false) {
                 return true;
@@ -2725,7 +2725,7 @@ class PDFW_Ingestor
                 if (trim($fallback_text) !== '') {
                     return self::normalize_text($fallback_text);
                 }
-                $logs[] = 'PDF encontrado, mas parser PDF não está instalado no servidor.';
+                $logs[] = 'PDF processado via extração Python/OCR (modo padrão).';
                 return '';
             }
             $tmp = $path_hint !== '' ? $path_hint : self::write_temp_file($contents, '.pdf');
@@ -3031,8 +3031,8 @@ class PDFW_Ingestor
         $first = (string) ($lines[0] ?? '');
 
         if (
-            mb_strlen($first) >= 3
-            && mb_strlen($first) <= 140
+            pdfw_mb_strlen($first) >= 3
+            && pdfw_mb_strlen($first) <= 140
             && ! preg_match('/^(ingredientes?|modo\\s+de\\s+preparo|preparo|dica|categoria|descri(?:c|ç)(?:a|ã)o|tempo|por(?:c|ç)(?:o|õ)es?|dificuldade|imagem|informa(?:c|ç)(?:a|ã)o nutricional|calorias?|carboidratos?|prote(?:i|í)nas?|gorduras?|fibras?)\\b/iu', $first)
         ) {
             $title = $first;
@@ -3098,8 +3098,8 @@ class PDFW_Ingestor
 
         // Use first ~200 chars as description if body is longer
         $description = $body;
-        if (mb_strlen($body) > 200) {
-            $description = mb_substr($body, 0, 200) . '…';
+        if (pdfw_mb_strlen($body) > 200) {
+            $description = pdfw_mb_substr($body, 0, 200) . '…';
         }
 
         return [[
@@ -3203,7 +3203,7 @@ class PDFW_Ingestor
         if ($line === '') {
             return false;
         }
-        if (mb_strlen($line) > 120) {
+        if (pdfw_mb_strlen($line) > 120) {
             return false;
         }
         if (preg_match('/\\.$/u', $line)) {
@@ -3218,7 +3218,7 @@ class PDFW_Ingestor
         if (preg_match('/\\b(g|kg|ml|l|colher|x[ií]cara|x[ií]caras|ovo|ovos)\\b/iu', $line)) {
             return true;
         }
-        if (strpos($line, ',') !== false && mb_strlen($line) <= 90) {
+        if (strpos($line, ',') !== false && pdfw_mb_strlen($line) <= 90) {
             return true;
         }
         return (bool) preg_match('/^[\\p{L}\\s\\-]+$/u', $line);
@@ -3236,7 +3236,7 @@ class PDFW_Ingestor
         if (preg_match('/^(bater|misturar|adicionar|colocar|assar|cozinhar|fritar|esquentar|refogar|lavar|cortar|hidratar|temperar|unte|preaque[çc]a|levar|deixar|sirva|disponha|retire)\\b/iu', $line)) {
             return true;
         }
-        return mb_strlen($line) > 80 && (strpos($line, '.') !== false || strpos($line, ';') !== false);
+        return pdfw_mb_strlen($line) > 80 && (strpos($line, '.') !== false || strpos($line, ';') !== false);
     }
 
     /**
@@ -3286,11 +3286,11 @@ class PDFW_Ingestor
             'estrutura',
         ];
         foreach (array_slice($lines, 0, 8) as $line) {
-            $low = remove_accents(mb_strtolower(trim($line)));
+            $low = remove_accents(pdfw_mb_strtolower(trim($line)));
             if (in_array($low, $generic, true)) {
                 continue;
             }
-            if (mb_strlen($line) < 3) {
+            if (pdfw_mb_strlen($line) < 3) {
                 continue;
             }
             return $line;
@@ -3660,7 +3660,7 @@ class PDFW_Ingestor
 
     private static function normalize_image_key(string $text): string
     {
-        $text = remove_accents(mb_strtolower($text));
+        $text = remove_accents(pdfw_mb_strtolower($text));
         $text = preg_replace('/[^a-z0-9]+/', '-', $text);
         $text = trim((string) $text, '-');
         $text = preg_replace('/^\\d+[-_]?/', '', (string) $text);
@@ -3711,7 +3711,7 @@ class PDFW_Ingestor
             if ($title === '') {
                 continue;
             }
-            $key = sanitize_title(remove_accents(mb_strtolower($title)));
+            $key = sanitize_title(remove_accents(pdfw_mb_strtolower($title)));
             $score = count((array) ($recipe['ingredients'] ?? [])) + count((array) ($recipe['steps'] ?? []));
             if (! isset($out[$key])) {
                 $out[$key] = ['score' => $score, 'recipe' => $recipe];

@@ -8,6 +8,7 @@ class PDFW_Exporter
 {
     public static function html_to_pdf(string $html): array
     {
+        // Load only the first available Dompdf autoloader (prefer Composer)
         $autoload_candidates = [
             PDFW_PLUGIN_DIR . 'vendor/autoload.php',
             PDFW_PLUGIN_DIR . 'lib/dompdf/autoload.inc.php',
@@ -15,6 +16,7 @@ class PDFW_Exporter
         foreach ($autoload_candidates as $autoload) {
             if (file_exists($autoload)) {
                 require_once $autoload;
+                break;
             }
         }
 
