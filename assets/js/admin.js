@@ -4,8 +4,8 @@
 
   const sampleButton = document.getElementById('pdfw-load-sample');
   const previewPdfButton = document.getElementById('pdfw-generate-preview-pdf');
-  const previewHtmlButton = document.getElementById('pdfw-generate-preview-html');
-  const downloadPdfButton = document.getElementById('pdfw-download-pdf');
+  const previewHtmlButton = null; // Removido da UI
+  const downloadPdfButton = null; // Removido da UI — download automático ao gerar PDF
   const previewFrame = document.getElementById('pdfw-preview-frame');
   const previewStatus = document.getElementById('pdfw-preview-status');
   const previewLog = document.getElementById('pdfw-preview-log');
@@ -2676,7 +2676,7 @@ Finalize com azeite extravirgem após o preparo.`;
     syncRawFromRecipes();
     previewBusy = true;
     setPreviewButtonsDisabled(true);
-    setStatus(mode === 'html' ? 'Gerando pré-visualização HTML...' : 'Gerando pré-visualização paginada...');
+    setStatus(mode === 'html' ? 'Gerando pré-visualização HTML...' : 'Gerando PDF...');
     setLog('');
 
     try {
@@ -2719,20 +2719,26 @@ Finalize com azeite extravirgem após o preparo.`;
           throw new Error('Pré-visualização HTML vazia retornada pelo servidor.');
         }
         showHtmlPreview(html);
-        setStatus('Pré-visualização HTML atualizada. Para validar paginação real, use a prévia PDF.');
+        setStatus('Pré-visualização HTML atualizada.');
       } else {
         const pdfBase64 = payload?.data?.pdf_base64 || '';
         if (!pdfBase64) {
           throw new Error('Pré-visualização sem PDF retornado pelo servidor.');
         }
         showPdfPreview(pdfBase64);
-        setStatus('Pré-visualização paginada atualizada. Se estiver tudo certo, clique em Baixar PDF.');
+        setStatus('PDF gerado com sucesso.');
+
+        // Download automático do PDF
+        const link = document.createElement('a');
+        link.href = 'data:application/pdf;base64,' + pdfBase64;
+        const title = normalizeLine(form.querySelector('[name="title"]')?.value || 'ebook');
+        link.download = title.replace(/[^a-zA-Z0-9À-ÿ _-]/g, '').replace(/\s+/g, '-') + '.pdf';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
       }
 
       setLog(payload?.data?.notice || '');
-      if (downloadPdfButton) {
-        downloadPdfButton.style.display = 'inline-flex';
-      }
     } catch (err) {
       setStatus('Erro na pré-visualização. Ajuste os dados e tente novamente.');
       const message = err instanceof Error ? err.message : 'Erro inesperado';

@@ -270,14 +270,12 @@
         <section class="pdfw-editor-section" data-section-id="exportar">
           <section class="pdfw-card">
             <h2>Exportar</h2>
-            <p class="hint">Use <strong>Prévia fiel (PDF)</strong> para paginação real e <strong>Prévia rápida (HTML)</strong> para checagem de conteúdo. A pré-visualização aparece no painel ao lado.</p>
+            <p class="hint">A prévia em tempo real aparece no painel ao lado. Use os botões abaixo para exportar o arquivo final.</p>
             <div class="pdfw-actions">
-              <button type="button" class="button button-primary button-hero" id="pdfw-generate-preview-pdf">Prévia fiel (PDF)</button>
-              <button type="button" class="button button-secondary button-hero" id="pdfw-generate-preview-html">Prévia rápida (HTML)</button>
-              <button type="submit" class="button button-primary button-hero" id="pdfw-download-pdf" name="pdfw_output" value="pdf" style="display:none;">Baixar PDF</button>
-              <button type="submit" class="button button-secondary button-hero" id="pdfw-generate-html" name="pdfw_output" value="html">Gerar HTML</button>
+              <button type="button" class="button button-primary button-hero" id="pdfw-generate-preview-pdf">Baixar PDF</button>
+              <button type="submit" class="button button-secondary button-hero" id="pdfw-generate-html" name="pdfw_output" value="html">Baixar HTML</button>
             </div>
-            <p class="hint" id="pdfw-preview-status">Nenhuma prévia gerada ainda.</p>
+            <p class="hint" id="pdfw-preview-status"></p>
             <pre id="pdfw-preview-log" class="pdfw-preview-log" hidden></pre>
           </section>
         </section>
