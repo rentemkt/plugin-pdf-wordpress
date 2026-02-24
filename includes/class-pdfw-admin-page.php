@@ -454,7 +454,52 @@ class PDFW_Admin_Page
         if (strpos($value, 'data:image/') === 0) {
             return $value;
         }
+        if (strpos($value, 'file://') === 0 || strpos($value, '/') === 0) {
+            $local_src = $this->sanitize_local_image_source($value);
+            if ($local_src !== '') {
+                return $local_src;
+            }
+        }
         return esc_url_raw($value);
+    }
+
+    private function sanitize_local_image_source(string $value): string
+    {
+        $path = trim($value);
+        if ($path === '') {
+            return '';
+        }
+
+        if (strpos($path, 'file://') === 0) {
+            $path = (string) preg_replace('#^file:/+#i', '/', $path);
+            $path = rawurldecode($path);
+        }
+
+        $path = wp_normalize_path($path);
+        if ($path === '' || ! is_file($path) || ! is_readable($path)) {
+            return '';
+        }
+
+        $uploads = wp_get_upload_dir();
+        $base_dir = wp_normalize_path((string) ($uploads['basedir'] ?? ''));
+        if ($base_dir === '') {
+            return '';
+        }
+
+        $base_prefix = trailingslashit($base_dir);
+        if ($path !== $base_dir && strpos($path, $base_prefix) !== 0) {
+            return '';
+        }
+
+        return $this->path_to_file_uri($path);
+    }
+
+    private function path_to_file_uri(string $path): string
+    {
+        $normalized = wp_normalize_path($path);
+        $trimmed = ltrim($normalized, '/');
+        $segments = array_map('rawurlencode', explode('/', $trimmed));
+        return 'file:///' . implode('/', $segments);
     }
 
     private function sanitize_categories_raw(string $value): string

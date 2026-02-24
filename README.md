@@ -4,7 +4,7 @@ Plugin WordPress para geração de ebook em HTML/PDF com temas visuais, focado e
 
 ## Status
 
-Versão atual (v0.3.8):
+Versão atual (v0.3.9):
 
 - tela admin `PDF Ebook Studio`
 - gestão de projetos e clientes no próprio WordPress (salvar, carregar, excluir)

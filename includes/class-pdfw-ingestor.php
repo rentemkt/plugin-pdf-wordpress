@@ -9,6 +9,14 @@ class PDFW_Ingestor
     private const MAX_FILES = 80;
     private const MAX_DEPTH = 4;
     private const MAX_FILE_BYTES = 10 * 1024 * 1024;
+    private const IMAGE_INLINE_MAX_BYTES = 500 * 1024;
+    private const IMAGE_INLINE_MAX_COUNT = 16;
+    private const IMAGE_INLINE_TOTAL_BYTES = 6 * 1024 * 1024;
+    private const TEMP_IMAGE_TTL = 604800;
+
+    private static int $inline_image_count = 0;
+    private static int $inline_image_total_bytes = 0;
+    private static bool $temp_cleanup_done = false;
 
     /** @var array<string, bool> */
     private static array $skip_name_map = [
@@ -54,6 +62,8 @@ class PDFW_Ingestor
      */
     public static function ingest(array $uploaded_files, string $drive_folder_url = ''): array
     {
+        self::reset_image_runtime_state();
+
         $logs = [];
         $recipes = [];
         $imported_files = 0;
@@ -338,7 +348,9 @@ class PDFW_Ingestor
                     $download['content'],
                     $download['name'],
                     $download['ext'],
-                    $logs
+                    $logs,
+                    '',
+                    true
                 );
                 if ($image_entry) {
                     $image_entries[] = $image_entry;
@@ -468,6 +480,8 @@ class PDFW_Ingestor
      */
     public static function process_single_drive_item(array $item): array
     {
+        self::reset_image_runtime_state();
+
         $logs = [];
         $name = trim((string) ($item['name'] ?? 'arquivo-drive'));
         if ($name === '') {
@@ -527,7 +541,14 @@ class PDFW_Ingestor
         }
 
         if (isset(self::$supported_image_ext_map[$download['ext']])) {
-            $image_entry = self::build_image_entry_from_blob($download['content'], $download['name'], $download['ext'], $logs);
+            $image_entry = self::build_image_entry_from_blob(
+                $download['content'],
+                $download['name'],
+                $download['ext'],
+                $logs,
+                '',
+                true
+            );
             $ok = (bool) $image_entry;
             return [
                 'success' => $ok,
@@ -1452,21 +1473,49 @@ class PDFW_Ingestor
             return null;
         }
 
+        if (is_int($size) && self::should_store_image_as_temp($size)) {
+            $mime_from_path = self::guess_image_mime_from_path($path, $ext);
+            if (strpos($mime_from_path, 'image/') === 0) {
+                $temp_src = self::store_temp_image_from_path($path, $name, $ext, $logs);
+                if ($temp_src !== '') {
+                    $base = pathinfo($name, PATHINFO_FILENAME);
+                    if ($base === '') {
+                        $base = 'imagem';
+                    }
+                    return [
+                        'name' => $name,
+                        'base' => $base,
+                        'key' => self::normalize_image_key($base),
+                        'src' => $temp_src,
+                        'is_cover_hint' => self::is_cover_image_name($name),
+                    ];
+                }
+            }
+        }
+
         $contents = @file_get_contents($path);
         if (! is_string($contents) || $contents === '') {
             return null;
         }
 
-        return self::build_image_entry_from_blob($contents, $name, $ext, $logs);
+        return self::build_image_entry_from_blob($contents, $name, $ext, $logs, $path);
     }
 
     /**
      * @param array<int, string> $logs
      * @return array<string, mixed>|null
      */
-    private static function build_image_entry_from_blob(string $content, string $name, string $ext, array &$logs): ?array
+    private static function build_image_entry_from_blob(
+        string $content,
+        string $name,
+        string $ext,
+        array &$logs,
+        string $source_path = '',
+        bool $prefer_temp = false
+    ): ?array
     {
-        if (strlen($content) > self::MAX_FILE_BYTES) {
+        $content_size = strlen($content);
+        if ($content_size > self::MAX_FILE_BYTES) {
             $logs[] = "Imagem muito grande ignorada ({$name})";
             return null;
         }
@@ -1481,6 +1530,27 @@ class PDFW_Ingestor
         if ($base === '') {
             $base = 'imagem';
         }
+
+        if ($prefer_temp || self::should_store_image_as_temp($content_size)) {
+            $temp_src = '';
+            if ($source_path !== '' && is_file($source_path)) {
+                $temp_src = self::store_temp_image_from_path($source_path, $name, $ext, $logs);
+            }
+            if ($temp_src === '') {
+                $temp_src = self::store_temp_image_from_blob($content, $name, $ext, $logs);
+            }
+            if ($temp_src !== '') {
+                return [
+                    'name' => $name,
+                    'base' => $base,
+                    'key' => self::normalize_image_key($base),
+                    'src' => $temp_src,
+                    'is_cover_hint' => self::is_cover_image_name($name),
+                ];
+            }
+        }
+
+        self::register_inline_image_usage($content_size);
 
         return [
             'name' => $name,
@@ -1517,6 +1587,161 @@ class PDFW_Ingestor
         }
 
         return 'application/octet-stream';
+    }
+
+    private static function guess_image_mime_from_path(string $path, string $ext): string
+    {
+        if (function_exists('getimagesize')) {
+            $info = @getimagesize($path);
+            if (is_array($info) && ! empty($info['mime'])) {
+                return strtolower((string) $info['mime']);
+            }
+        }
+
+        return self::guess_image_mime($ext, '');
+    }
+
+    private static function should_store_image_as_temp(int $bytes): bool
+    {
+        if ($bytes > self::IMAGE_INLINE_MAX_BYTES) {
+            return true;
+        }
+        if (self::$inline_image_count >= self::IMAGE_INLINE_MAX_COUNT) {
+            return true;
+        }
+        return (self::$inline_image_total_bytes + $bytes) > self::IMAGE_INLINE_TOTAL_BYTES;
+    }
+
+    private static function register_inline_image_usage(int $bytes): void
+    {
+        self::$inline_image_count++;
+        self::$inline_image_total_bytes += max(0, $bytes);
+    }
+
+    private static function reset_image_runtime_state(): void
+    {
+        self::$inline_image_count = 0;
+        self::$inline_image_total_bytes = 0;
+        self::$temp_cleanup_done = false;
+    }
+
+    /**
+     * @param array<int, string> $logs
+     */
+    private static function ensure_temp_image_dir(array &$logs): string
+    {
+        if (! function_exists('wp_get_upload_dir')) {
+            return '';
+        }
+
+        $uploads = wp_get_upload_dir();
+        $base_dir = wp_normalize_path((string) ($uploads['basedir'] ?? ''));
+        if ($base_dir === '') {
+            return '';
+        }
+
+        $temp_dir = wp_normalize_path(trailingslashit($base_dir) . 'pdfw-temp');
+        if (! is_dir($temp_dir) && ! wp_mkdir_p($temp_dir)) {
+            $logs[] = 'Falha ao criar pasta temporária de imagens no uploads.';
+            return '';
+        }
+
+        if (! self::$temp_cleanup_done) {
+            self::cleanup_temp_image_dir($temp_dir);
+            self::$temp_cleanup_done = true;
+        }
+
+        return $temp_dir;
+    }
+
+    private static function cleanup_temp_image_dir(string $temp_dir): void
+    {
+        $entries = glob($temp_dir . '/*');
+        if (! is_array($entries) || ! $entries) {
+            return;
+        }
+
+        $cutoff = time() - self::TEMP_IMAGE_TTL;
+        foreach ($entries as $entry) {
+            if (! is_file($entry)) {
+                continue;
+            }
+            $mtime = @filemtime($entry);
+            if ($mtime !== false && $mtime < $cutoff) {
+                @unlink($entry);
+            }
+        }
+    }
+
+    /**
+     * @param array<int, string> $logs
+     */
+    private static function store_temp_image_from_path(string $source_path, string $name, string $ext, array &$logs): string
+    {
+        if (! is_file($source_path)) {
+            return '';
+        }
+
+        $temp_dir = self::ensure_temp_image_dir($logs);
+        if ($temp_dir === '') {
+            return '';
+        }
+
+        $target_path = self::build_temp_image_path($temp_dir, $name, $ext);
+        if (@copy($source_path, $target_path) !== true) {
+            return '';
+        }
+
+        return self::path_to_file_uri($target_path);
+    }
+
+    /**
+     * @param array<int, string> $logs
+     */
+    private static function store_temp_image_from_blob(string $content, string $name, string $ext, array &$logs): string
+    {
+        $temp_dir = self::ensure_temp_image_dir($logs);
+        if ($temp_dir === '') {
+            return '';
+        }
+
+        $target_path = self::build_temp_image_path($temp_dir, $name, $ext);
+        if (@file_put_contents($target_path, $content, LOCK_EX) === false) {
+            return '';
+        }
+
+        return self::path_to_file_uri($target_path);
+    }
+
+    private static function build_temp_image_path(string $temp_dir, string $name, string $ext): string
+    {
+        $safe_base = sanitize_file_name(pathinfo($name, PATHINFO_FILENAME));
+        if ($safe_base === '') {
+            $safe_base = 'imagem';
+        }
+
+        $safe_ext = strtolower((string) preg_replace('/[^a-z0-9]/', '', $ext));
+        if ($safe_ext === '') {
+            $safe_ext = 'img';
+        }
+
+        $rand = wp_generate_password(8, false, false);
+        return wp_normalize_path(
+            trailingslashit($temp_dir)
+            . $safe_base
+            . '-'
+            . $rand
+            . '.'
+            . $safe_ext
+        );
+    }
+
+    private static function path_to_file_uri(string $path): string
+    {
+        $normalized = wp_normalize_path($path);
+        $trimmed = ltrim($normalized, '/');
+        $segments = array_map('rawurlencode', explode('/', $trimmed));
+        return 'file:///' . implode('/', $segments);
     }
 
     private static function normalize_image_key(string $text): string

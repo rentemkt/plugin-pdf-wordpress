@@ -160,8 +160,9 @@ class PDFW_Renderer
                     $category_label = trim((string) ($recipe['category'] ?? ''));
                     $image_src_raw = trim((string) ($recipe['image'] ?? ''));
                     $generic_media_html = '';
-                    if (self::is_valid_image_src($image_src_raw)) {
-                        $generic_media_html = '<div class="generic-media"><img src="' . self::h($image_src_raw) . '" alt="' . $recipe_title . '"></div>';
+                    $image_src = self::normalize_image_src_for_output($image_src_raw);
+                    if ($image_src !== '') {
+                        $generic_media_html = '<div class="generic-media"><img src="' . self::h($image_src) . '" alt="' . $recipe_title . '"></div>';
                     }
 
                     $recipe_sections_html .= '<div class="generic-content-page">'
@@ -1403,8 +1404,8 @@ HTML;
      */
     private static function recipe_media_html(array $recipe, array $theme, int $index, string $title): string
     {
-        $image = isset($recipe['image']) ? trim((string) $recipe['image']) : '';
-        if ($image !== '' && self::is_valid_image_src($image)) {
+        $image = self::normalize_image_src_for_output((string) ($recipe['image'] ?? ''));
+        if ($image !== '') {
             return '<img src="' . self::h($image) . '" alt="' . self::h($title) . '">';
         }
 
@@ -1414,8 +1415,8 @@ HTML;
 
     private static function cover_media_html(string $image_src, string $title): string
     {
-        $image_src = trim($image_src);
-        if (! self::is_valid_image_src($image_src)) {
+        $image_src = self::normalize_image_src_for_output($image_src);
+        if ($image_src === '') {
             return '';
         }
         return '<div class="cover-media"><img src="' . self::h($image_src) . '" alt="' . self::h($title) . '"></div>';
@@ -1423,8 +1424,8 @@ HTML;
 
     private static function category_divider_media_html(string $image_src, string $title): string
     {
-        $image_src = trim($image_src);
-        if (! self::is_valid_image_src($image_src)) {
+        $image_src = self::normalize_image_src_for_output($image_src);
+        if ($image_src === '') {
             return '';
         }
 
@@ -1433,10 +1434,70 @@ HTML;
 
     private static function is_valid_image_src(string $src): bool
     {
-        if (filter_var($src, FILTER_VALIDATE_URL)) {
-            return true;
+        return self::normalize_image_src_for_output($src) !== '';
+    }
+
+    private static function normalize_image_src_for_output(string $src): string
+    {
+        $src = trim($src);
+        if ($src === '') {
+            return '';
         }
-        return (bool) preg_match('#^data:image/[a-zA-Z0-9.+-]+;base64,#', $src);
+        if ((bool) preg_match('#^data:image/[a-zA-Z0-9.+-]+;base64,#', $src)) {
+            return $src;
+        }
+        if (strpos($src, 'file://') === 0 || strpos($src, '/') === 0) {
+            $local_path = self::resolve_local_image_path($src);
+            if ($local_path !== '') {
+                return self::path_to_file_uri($local_path);
+            }
+        }
+
+        if (filter_var($src, FILTER_VALIDATE_URL)) {
+            return $src;
+        }
+
+        return '';
+    }
+
+    private static function resolve_local_image_path(string $src): string
+    {
+        $path = trim($src);
+        if ($path === '') {
+            return '';
+        }
+
+        if (strpos($path, 'file://') === 0) {
+            $path = (string) preg_replace('#^file:/+#i', '/', $path);
+            $path = rawurldecode($path);
+        }
+
+        $path = wp_normalize_path($path);
+        if ($path === '' || ! is_file($path) || ! is_readable($path)) {
+            return '';
+        }
+
+        $uploads = wp_get_upload_dir();
+        $base_dir = wp_normalize_path((string) ($uploads['basedir'] ?? ''));
+        if ($base_dir === '') {
+            return '';
+        }
+
+        $base_prefix = trailingslashit($base_dir);
+        if ($path !== $base_dir && strpos($path, $base_prefix) !== 0) {
+            return '';
+        }
+
+        return $path;
+    }
+
+    private static function path_to_file_uri(string $path): string
+    {
+        $normalized = wp_normalize_path($path);
+        $trimmed = ltrim($normalized, '/');
+        $segments = array_map('rawurldecode', explode('/', $trimmed));
+        $encoded = array_map('rawurlencode', $segments);
+        return 'file:///' . implode('/', $encoded);
     }
 
     private static function recipe_cover_style(array $theme, int $index): string

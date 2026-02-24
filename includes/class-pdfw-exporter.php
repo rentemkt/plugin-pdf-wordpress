@@ -30,6 +30,9 @@ class PDFW_Exporter
             $options = new \Dompdf\Options();
             $options->set('isRemoteEnabled', true);
             $options->set('isHtml5ParserEnabled', true);
+            if (defined('ABSPATH')) {
+                $options->setChroot(wp_normalize_path((string) ABSPATH));
+            }
 
             $dompdf = new \Dompdf\Dompdf($options);
             $dompdf->loadHtml($html, 'UTF-8');

@@ -333,6 +333,29 @@ Finalize com azeite extravirgem após o preparo.`;
     previewObjectUrl = '';
   };
 
+  const resetPreviewPanel = () => {
+    clearPreviewUrl();
+    if (previewFrame) {
+      previewFrame.removeAttribute('srcdoc');
+      previewFrame.src = 'about:blank';
+    }
+    if (previewCacheInput) {
+      previewCacheInput.value = '';
+    }
+    setStatus('Nenhuma prévia gerada ainda.');
+    setLog('');
+    if (downloadPdfButton) {
+      downloadPdfButton.style.display = 'none';
+    }
+  };
+
+  const clearProjectCardSelection = () => {
+    if (!projectDashboard) return;
+    projectDashboard.querySelectorAll('.pdfw-project-card.is-active').forEach((card) => {
+      card.classList.remove('is-active');
+    });
+  };
+
   const base64ToBlob = (base64, contentType) => {
     const binary = atob(base64);
     const len = binary.length;
@@ -2047,16 +2070,14 @@ Finalize com azeite extravirgem após o preparo.`;
     const ok = window.confirm('Excluir este projeto salvo? Essa ação não pode ser desfeita.');
     if (!ok) return;
 
+    const wasActive = targetId === currentProjectId;
     await projectAjax('delete', { project_id: targetId });
-
-    if (targetId === currentProjectId) {
-      currentProjectId = '';
-      if (projectNameInput) projectNameInput.value = '';
-      if (projectClientInput) projectClientInput.value = '';
+    await refreshProjects();
+    if (wasActive) {
+      createNewProject({ silentToast: true, silentStatus: true });
     }
 
-    await refreshProjects();
-    setProjectStatus('Projeto excluído.', 'ok');
+    setProjectStatus(wasActive ? 'Projeto excluído e editor limpo para novo projeto.' : 'Projeto excluído.', 'ok');
     showToast('Projeto excluído.', 'success');
     updateSidebarMeta();
   };
@@ -2065,23 +2086,43 @@ Finalize com azeite extravirgem após o preparo.`;
     await deleteProjectById(currentProjectId);
   };
 
-  const createNewProject = () => {
+  const createNewProject = (options = {}) => {
+    const { silentToast = false, silentStatus = false } = options;
     currentProjectId = '';
     if (projectNameInput) projectNameInput.value = '';
     if (projectClientInput) projectClientInput.value = '';
+    if (driveInput) driveInput.value = '';
+
+    const filesInput = form.querySelector('input[name="source_files[]"]');
+    if (filesInput) {
+      try {
+        filesInput.value = '';
+      } catch {
+        // browsers can block non-empty assignment; empty reset is safe best-effort
+      }
+    }
 
     if (initialPayload) {
       applyPayloadToForm(initialPayload, { silent: true });
     }
 
     projectDirty = false;
-    setProjectStatus('Novo projeto iniciado (ainda não salvo).', 'warn');
-    if (downloadPdfButton) {
-      downloadPdfButton.style.display = 'none';
+    if (!silentStatus) {
+      setProjectStatus('Novo projeto iniciado (ainda não salvo).', 'warn');
+    }
+    setImportStatus('Cole o link do Drive ou selecione arquivos e clique em Importar conteúdo.', 'idle');
+    hideImportProgress();
+    importedRecipesRaw = '';
+    if (applyImportedButton) {
+      applyImportedButton.style.display = 'none';
     }
     renderImportAudit([], null, false);
+    resetPreviewPanel();
     renderProjectDashboard(projectsCache);
-    showToast('Novo projeto iniciado.', 'info');
+    clearProjectCardSelection();
+    if (!silentToast) {
+      showToast('Novo projeto iniciado.', 'info');
+    }
     updateSidebarMeta();
   };
 

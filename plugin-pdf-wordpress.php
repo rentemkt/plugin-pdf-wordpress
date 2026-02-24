@@ -2,7 +2,7 @@
 /**
  * Plugin Name: PDF Ebook Studio
  * Description: Gera ebooks em HTML/PDF com temas visuais direto no WordPress.
- * Version: 0.3.8
+ * Version: 0.3.9
  * Author: Rentemkt
  * Text Domain: pdf-ebook-studio
  */
@@ -11,7 +11,7 @@ if (! defined('ABSPATH')) {
     exit;
 }
 
-define('PDFW_PLUGIN_VERSION', '0.3.8');
+define('PDFW_PLUGIN_VERSION', '0.3.9');
 define('PDFW_PLUGIN_FILE', __FILE__);
 define('PDFW_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('PDFW_PLUGIN_URL', plugin_dir_url(__FILE__));
