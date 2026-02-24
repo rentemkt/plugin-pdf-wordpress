@@ -2642,17 +2642,6 @@ Finalize com azeite extravirgem após o preparo.`;
     updateLivePreview();
   };
 
-  const showPdfPreview = (pdfBase64) => {
-    const pdfBlob = base64ToBlob(pdfBase64, 'application/pdf');
-    clearPreviewUrl();
-    previewObjectUrl = URL.createObjectURL(pdfBlob);
-
-    if (previewFrame) {
-      previewFrame.removeAttribute('srcdoc');
-      previewFrame.src = previewObjectUrl;
-    }
-  };
-
   const showHtmlPreview = (html) => {
     clearPreviewUrl();
     if (previewFrame) {
@@ -2725,17 +2714,19 @@ Finalize com azeite extravirgem após o preparo.`;
         if (!pdfBase64) {
           throw new Error('Pré-visualização sem PDF retornado pelo servidor.');
         }
-        showPdfPreview(pdfBase64);
-        setStatus('PDF gerado com sucesso.');
+        setStatus('PDF gerado com sucesso. Download iniciado.');
 
-        // Download automático do PDF
+        // Download direto do PDF (sem preview no iframe — Chrome bloqueia blob PDF em sandbox)
+        const pdfBlob = base64ToBlob(pdfBase64, 'application/pdf');
+        const blobUrl = URL.createObjectURL(pdfBlob);
         const link = document.createElement('a');
-        link.href = 'data:application/pdf;base64,' + pdfBase64;
+        link.href = blobUrl;
         const title = normalizeLine(form.querySelector('[name="title"]')?.value || 'ebook');
         link.download = title.replace(/[^a-zA-Z0-9À-ÿ _-]/g, '').replace(/\s+/g, '-') + '.pdf';
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
+        URL.revokeObjectURL(blobUrl);
       }
 
       setLog(payload?.data?.notice || '');
