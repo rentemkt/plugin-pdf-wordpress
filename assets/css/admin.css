@@ -718,6 +718,36 @@
   to { opacity: 0; transform: translateY(12px); }
 }
 
+.pdfw-transcribe-lab {
+  background: linear-gradient(170deg, #ffffff 0%, #f8fbff 48%, #f3f9ff 100%);
+  border: 1px solid #d6e3f2;
+}
+
+.pdfw-transcribe-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.pdfw-transcribe-head h2 {
+  margin-bottom: 6px;
+}
+
+.pdfw-transcribe-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: linear-gradient(120deg, #0d5ea8, #2e8acb);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+}
+
 .pdfw-transcribe-box {
   margin-top: 10px;
 }
@@ -727,26 +757,70 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  border: 2px dashed #ccd0d4;
-  border-radius: 10px;
-  padding: 36px 20px;
+  border: 1px dashed #95b8dc;
+  border-radius: 14px;
+  padding: 34px 24px;
   text-align: center;
   cursor: pointer;
-  background: #fcfcfc;
+  background:
+    radial-gradient(180px 70px at 10% 0%, rgba(41, 131, 196, 0.1), transparent 70%),
+    radial-gradient(220px 90px at 90% 100%, rgba(77, 154, 206, 0.12), transparent 70%),
+    #f7fbff;
   transition: all 0.2s ease;
-  color: #646970;
+  color: #3b4654;
+  gap: 8px;
+}
+
+.pdfw-transcribe-icon {
+  width: 48px;
+  height: 48px;
+  font-size: 28px;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(140deg, #1f70b3, #0d5ea8);
+  color: #fff;
+  box-shadow: 0 10px 24px rgba(13, 94, 168, 0.25);
+}
+
+.pdfw-transcribe-subhint {
+  font-size: 12px;
+  color: #4f5e70;
+}
+
+.pdfw-transcribe-format-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 6px;
+  margin-top: 4px;
+}
+
+.pdfw-transcribe-format-chips span {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #bdd4ea;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #245275;
+  background: #fff;
 }
 
 .pdfw-file-drop:hover,
 .pdfw-file-drop.is-dragover {
   border-color: #2271b1;
-  background: #f0f6fc;
-  color: #2271b1;
+  background:
+    radial-gradient(220px 84px at 12% 0%, rgba(41, 131, 196, 0.16), transparent 70%),
+    radial-gradient(250px 100px at 88% 100%, rgba(77, 154, 206, 0.18), transparent 70%),
+    #eff7ff;
+  color: #165482;
 }
 
 .pdfw-file-drop.is-busy {
-  opacity: 0.7;
+  opacity: 0.78;
   cursor: progress;
 }
 
@@ -754,11 +828,15 @@
   margin-top: 14px;
   text-align: center;
   font-weight: 600;
-  color: #2271b1;
+  color: #0d5ea8;
 }
 
 .pdfw-transcribe-result {
   margin-top: 16px;
+  background: #fff;
+  border: 1px solid #dbe7f3;
+  border-radius: 12px;
+  padding: 14px;
 }
 
 .pdfw-card-header-actions {
@@ -771,6 +849,24 @@
 
 .pdfw-card-header-actions h3 {
   margin: 0;
+}
+
+.pdfw-transcribe-actions-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pdfw-transcribe-downloads {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+.pdfw-transcribe-actions-inline .button,
+.pdfw-transcribe-downloads .button {
+  border-radius: 8px;
 }
 
 .pdfw-content-editor {
@@ -826,6 +922,11 @@
 
   .pdfw-sidebar-nav {
     grid-template-columns: 1fr;
+  }
+
+  .pdfw-transcribe-head {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }
 

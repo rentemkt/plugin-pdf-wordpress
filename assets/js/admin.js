@@ -29,6 +29,11 @@
   const transcribeResult = document.getElementById('pdfw-transcribe-result');
   const transcriptionText = document.getElementById('pdfw-transcription-text');
   const copyTranscribeBtn = document.getElementById('pdfw-copy-transcription');
+  const copyTranscribeAllBtn = document.getElementById('pdfw-copy-transcription-all');
+  const downloadTranscribeTxtBtn = document.getElementById('pdfw-download-transcription-txt');
+  const downloadTranscribeSrtBtn = document.getElementById('pdfw-download-transcription-srt');
+  const downloadTranscribeVttBtn = document.getElementById('pdfw-download-transcription-vtt');
+  const downloadTranscribeLipsyncBtn = document.getElementById('pdfw-download-transcription-lipsync');
   const transcribeLabel = document.getElementById('pdfw-transcribe-label');
 
   const recipesRawInput = form.querySelector('textarea[name="recipes_raw"]');
@@ -71,6 +76,12 @@
   let currentProjectId = '';
   let projectDirty = false;
   let activeSection = 'projetos';
+  let transcribeOutputs = {
+    txt: '',
+    srt: '',
+    vtt: '',
+    lipsync: '',
+  };
   const importButtonDefaultHtml = importButton ? importButton.innerHTML : 'Importar conteúdo';
   const transcribeDefaultLabelHtml = transcribeLabel ? transcribeLabel.innerHTML : '';
 
@@ -434,41 +445,184 @@ Finalize com azeite extravirgem após o preparo.`;
 
   const isStandaloneTranscribeFileAllowed = (fileName) => {
     const name = String(fileName || '').toLowerCase();
-    return ['.mp3', '.wav', '.m4a', '.ogg', '.mp4', '.mpeg', '.webm'].some((ext) => name.endsWith(ext));
+    return ['.mp3', '.wav', '.m4a', '.ogg', '.mp4', '.mpeg', '.webm', '.mkv'].some((ext) => name.endsWith(ext));
+  };
+
+  const isStandaloneTranscribeVideoFile = (fileName) => {
+    const name = String(fileName || '').toLowerCase();
+    return ['.mp4', '.webm', '.mkv', '.mpeg'].some((ext) => name.endsWith(ext));
+  };
+
+  const copyTextToClipboard = async (text, successMessage) => {
+    const value = normalizeLine(text);
+    if (!value) return false;
+
+    try {
+      let copied = false;
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(value);
+        copied = true;
+      } else if (transcriptionText) {
+        transcriptionText.value = value;
+        transcriptionText.select();
+        document.execCommand('copy');
+        copied = true;
+      }
+
+      if (!copied) {
+        return false;
+      }
+      if (successMessage) {
+        showToast(successMessage, 'success');
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const normalizeTranscribeOutputText = (value, format = 'txt') => {
+    const raw = normalizeLine(value || '');
+    if (!raw) return '';
+
+    if (format === 'vtt') {
+      const hasHeader = raw.slice(0, 6).toUpperCase() === 'WEBVTT';
+      return hasHeader ? raw : `WEBVTT\n\n${raw}`;
+    }
+
+    return raw;
+  };
+
+  const buildTranscriptionBundle = () => {
+    const parts = [];
+    if (transcribeOutputs.txt) {
+      parts.push(['TXT', transcribeOutputs.txt].join('\n'));
+    }
+    if (transcribeOutputs.srt) {
+      parts.push(['SRT', transcribeOutputs.srt].join('\n'));
+    }
+    if (transcribeOutputs.vtt) {
+      parts.push(['VTT', transcribeOutputs.vtt].join('\n'));
+    }
+    if (transcribeOutputs.lipsync) {
+      parts.push(['LIPSYNC_JSON', transcribeOutputs.lipsync].join('\n'));
+    }
+    if (!parts.length) return '';
+    return parts
+      .map((block) => {
+        const lines = block.split('\n');
+        const label = lines.shift() || 'OUTPUT';
+        const body = lines.join('\n');
+        return `===== ${label} =====\n${body}`;
+      })
+      .join('\n\n');
+  };
+
+  const updateTranscribeActionState = () => {
+    const hasTxt = normalizeLine(transcribeOutputs.txt) !== '';
+    const hasSrt = normalizeLine(transcribeOutputs.srt) !== '';
+    const hasVtt = normalizeLine(transcribeOutputs.vtt) !== '';
+    const hasLipsync = normalizeLine(transcribeOutputs.lipsync) !== '';
+    const hasAny = hasTxt || hasSrt || hasVtt || hasLipsync;
+
+    if (copyTranscribeBtn) copyTranscribeBtn.disabled = !hasTxt;
+    if (copyTranscribeAllBtn) copyTranscribeAllBtn.disabled = !hasAny;
+    if (downloadTranscribeTxtBtn) downloadTranscribeTxtBtn.disabled = !hasTxt;
+    if (downloadTranscribeSrtBtn) downloadTranscribeSrtBtn.disabled = !hasSrt;
+    if (downloadTranscribeVttBtn) downloadTranscribeVttBtn.disabled = !hasVtt;
+    if (downloadTranscribeLipsyncBtn) downloadTranscribeLipsyncBtn.disabled = !hasLipsync;
+  };
+
+  const resetTranscribeOutputs = () => {
+    transcribeOutputs = {
+      txt: '',
+      srt: '',
+      vtt: '',
+      lipsync: '',
+    };
+
+    if (transcriptionText) {
+      transcriptionText.value = '';
+    }
+    updateTranscribeActionState();
+  };
+
+  const setTranscribeOutputs = (payloadData) => {
+    const txt = normalizeTranscribeOutputText(payloadData?.text || '', 'txt');
+    const srt = normalizeTranscribeOutputText(payloadData?.srt || '', 'srt');
+    const vtt = normalizeTranscribeOutputText(payloadData?.vtt || '', 'vtt');
+    const lipsync = normalizeLine(payloadData?.lipsync_json || '');
+
+    transcribeOutputs = {
+      txt,
+      srt,
+      vtt,
+      lipsync,
+    };
+
+    if (transcriptionText) {
+      transcriptionText.value = txt;
+    }
+    updateTranscribeActionState();
   };
 
   const copyTranscriptionToClipboard = async () => {
-    const text = normalizeLine(transcriptionText?.value || '');
-    if (!text) {
+    if (normalizeLine(transcribeOutputs.txt) === '') {
       showToast('Não há texto para copiar ainda.', 'warn');
       return;
     }
 
-    try {
-      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-        await navigator.clipboard.writeText(text);
-      } else if (transcriptionText) {
-        transcriptionText.select();
-        document.execCommand('copy');
-      }
-      showToast('Texto copiado para a área de transferência.', 'success');
-    } catch {
+    const copied = await copyTextToClipboard(transcribeOutputs.txt, 'Texto copiado para a área de transferência.');
+    if (!copied) {
       showToast('Não foi possível copiar o texto automaticamente.', 'error');
     }
+  };
+
+  const copyAllTranscriptionToClipboard = async () => {
+    const bundle = buildTranscriptionBundle();
+    if (!bundle) {
+      showToast('Não há output para copiar ainda.', 'warn');
+      return;
+    }
+
+    const copied = await copyTextToClipboard(bundle, 'Output completo copiado para a área de transferência.');
+    if (!copied) {
+      showToast('Não foi possível copiar o output completo.', 'error');
+    }
+  };
+
+  const downloadTranscribeOutput = (text, filename, mimeType) => {
+    const value = normalizeLine(text);
+    if (!value) {
+      showToast('Esse formato ainda não está disponível para download.', 'warn');
+      return;
+    }
+
+    const blob = new Blob([value], { type: mimeType || 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
   };
 
   const handleStandaloneTranscription = async (file) => {
     if (!file) return;
     if (!isStandaloneTranscribeFileAllowed(file.name)) {
-      showToast('Formato não suportado. Use MP3, WAV, M4A, OGG, MP4, MPEG ou WEBM.', 'error');
+      showToast('Formato não suportado. Use MP3, WAV, M4A, OGG, MP4, MPEG, WEBM ou MKV.', 'error');
       return;
     }
 
     if (transcribeResult) {
       transcribeResult.hidden = true;
     }
-    if (transcriptionText) {
-      transcriptionText.value = '';
+    resetTranscribeOutputs();
+
+    if (isStandaloneTranscribeVideoFile(file.name)) {
+      showToast('Vídeo longo detectado. O processamento pode levar alguns minutos dependendo do tamanho. Por favor, aguarde.', 'info', 7000);
     }
 
     setTranscribeBusy(true, `Processando: ${file.name}`);
@@ -504,9 +658,7 @@ Finalize com azeite extravirgem após o preparo.`;
         throw new Error('A API respondeu sem texto transcrito.');
       }
 
-      if (transcriptionText) {
-        transcriptionText.value = text;
-      }
+      setTranscribeOutputs(payload?.data || {});
       if (transcribeResult) {
         transcribeResult.hidden = false;
       }
@@ -515,7 +667,7 @@ Finalize com azeite extravirgem após o preparo.`;
       const message = error instanceof Error ? error.message : 'Erro ao transcrever arquivo.';
       showToast(message, 'error');
     } finally {
-      setTranscribeBusy(false, 'Clique ou arraste um arquivo aqui\n(MP3, WAV, M4A, OGG, MP4, MPEG, WEBM)');
+      setTranscribeBusy(false, 'Clique ou arraste um arquivo aqui\n(MP3, WAV, M4A, OGG, MP4, MPEG, WEBM, MKV)');
       if (transcribeLabel && transcribeDefaultLabelHtml) {
         transcribeLabel.innerHTML = transcribeDefaultLabelHtml;
       }
@@ -2348,6 +2500,41 @@ Finalize com azeite extravirgem após o preparo.`;
     });
   }
 
+  if (copyTranscribeAllBtn) {
+    copyTranscribeAllBtn.addEventListener('click', async (event) => {
+      event.preventDefault();
+      await copyAllTranscriptionToClipboard();
+    });
+  }
+
+  if (downloadTranscribeTxtBtn) {
+    downloadTranscribeTxtBtn.addEventListener('click', (event) => {
+      event.preventDefault();
+      downloadTranscribeOutput(transcribeOutputs.txt, 'transcricao.txt', 'text/plain;charset=utf-8');
+    });
+  }
+
+  if (downloadTranscribeSrtBtn) {
+    downloadTranscribeSrtBtn.addEventListener('click', (event) => {
+      event.preventDefault();
+      downloadTranscribeOutput(transcribeOutputs.srt, 'transcricao.srt', 'text/plain;charset=utf-8');
+    });
+  }
+
+  if (downloadTranscribeVttBtn) {
+    downloadTranscribeVttBtn.addEventListener('click', (event) => {
+      event.preventDefault();
+      downloadTranscribeOutput(transcribeOutputs.vtt, 'transcricao.vtt', 'text/vtt;charset=utf-8');
+    });
+  }
+
+  if (downloadTranscribeLipsyncBtn) {
+    downloadTranscribeLipsyncBtn.addEventListener('click', (event) => {
+      event.preventDefault();
+      downloadTranscribeOutput(transcribeOutputs.lipsync, 'transcricao-lipsync.json', 'application/json;charset=utf-8');
+    });
+  }
+
   if (recipesRawInput) {
     recipesRawInput.addEventListener('input', () => {
       syncRecipesFromRaw();
@@ -2459,6 +2646,7 @@ Finalize com azeite extravirgem após o preparo.`;
   const bootstrap = async () => {
     syncRecipesFromRaw();
     initialPayload = collectFormPayload();
+    resetTranscribeOutputs();
     setImportStatus('Cole o link do Drive ou selecione arquivos e clique em Importar conteúdo.', 'idle');
     hideImportProgress();
     renderImportAudit([], null, false);

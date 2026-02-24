@@ -105,9 +105,9 @@
             <section class="pdfw-card">
               <h2>Importação automática</h2>
               <label>Upload de arquivos
-                <input type="file" name="source_files[]" multiple accept=".txt,.md,.html,.htm,.docx,.pdf,.pptx,.mp3,.wav,.m4a,.ogg">
+                <input type="file" name="source_files[]" multiple accept=".txt,.md,.html,.htm,.docx,.pdf,.pptx,.mp3,.wav,.m4a,.ogg,.mp4,.mpeg,.webm,.mkv">
               </label>
-              <p class="hint">Suporta: TXT, MD, HTML, DOCX, PPTX, PDF e áudio (MP3, WAV, M4A, OGG).</p>
+              <p class="hint">Suporta: TXT, MD, HTML, DOCX, PPTX, PDF e mídia (MP3, WAV, M4A, OGG, MP4, MPEG, WEBM, MKV).</p>
               <label>Link da pasta pública do Google Drive
                 <input type="url" name="drive_folder_url" value="<?php echo esc_attr((string) ($payload['drive_folder_url'] ?? '')); ?>" placeholder="https://drive.google.com/drive/folders/...">
               </label>
@@ -191,15 +191,30 @@
         </section>
 
         <section class="pdfw-editor-section" data-section-id="transcricao">
-          <section class="pdfw-card">
-            <h2>Laboratório de Transcrição (Whisper AI)</h2>
-            <p class="hint">Ferramenta avulsa para transformar áudio/vídeo em texto. O conteúdo gerado aqui não vai para o ebook automaticamente.</p>
+          <section class="pdfw-card pdfw-transcribe-lab">
+            <div class="pdfw-transcribe-head">
+              <div>
+                <h2>Laboratório de Transcrição (Whisper AI)</h2>
+                <p class="hint">Ferramenta avulsa para transformar áudio/vídeo em texto. O conteúdo gerado aqui não vai para o ebook automaticamente.</p>
+              </div>
+              <span class="pdfw-transcribe-pill">v0.4.1</span>
+            </div>
 
             <div class="pdfw-transcribe-box">
               <label class="pdfw-file-drop" id="pdfw-transcribe-drop">
-                <span class="dashicons dashicons-microphone-alt" style="font-size: 40px; height: 40px; width: 40px; margin-bottom: 10px;"></span>
-                <span id="pdfw-transcribe-label">Clique ou arraste um arquivo aqui<br>(MP3, WAV, M4A, OGG, MP4, MPEG, WEBM)</span>
-                <input type="file" id="pdfw-transcribe-input" accept=".mp3,.wav,.m4a,.ogg,.mp4,.mpeg,.webm" hidden>
+                <span class="pdfw-transcribe-icon dashicons dashicons-format-audio"></span>
+                <span id="pdfw-transcribe-label">Clique ou arraste um arquivo aqui<br>(MP3, WAV, M4A, OGG, MP4, MPEG, WEBM, MKV)</span>
+                <span class="pdfw-transcribe-subhint">Legendas e lipsync ficam disponíveis para download após o processamento.</span>
+                <div class="pdfw-transcribe-format-chips">
+                  <span>.mp3</span>
+                  <span>.wav</span>
+                  <span>.ogg</span>
+                  <span>.m4a</span>
+                  <span>.mp4</span>
+                  <span>.webm</span>
+                  <span>.mkv</span>
+                </div>
+                <input type="file" id="pdfw-transcribe-input" accept=".mp3,.wav,.m4a,.ogg,.mp4,.mpeg,.webm,.mkv" hidden>
               </label>
 
               <div id="pdfw-transcribe-progress" hidden>
@@ -210,7 +225,16 @@
             <div class="pdfw-transcribe-result" id="pdfw-transcribe-result" hidden>
               <div class="pdfw-card-header-actions">
                 <h3>Resultado da transcrição</h3>
-                <button type="button" class="button" id="pdfw-copy-transcription">Copiar texto</button>
+                <div class="pdfw-transcribe-actions-inline">
+                  <button type="button" class="button" id="pdfw-copy-transcription" disabled>Copiar texto</button>
+                  <button type="button" class="button" id="pdfw-copy-transcription-all" disabled>Copiar output completo</button>
+                </div>
+              </div>
+              <div class="pdfw-transcribe-downloads">
+                <button type="button" class="button button-secondary" id="pdfw-download-transcription-txt" disabled>Baixar TXT</button>
+                <button type="button" class="button button-secondary" id="pdfw-download-transcription-srt" disabled>Baixar SRT</button>
+                <button type="button" class="button button-secondary" id="pdfw-download-transcription-vtt" disabled>Baixar VTT</button>
+                <button type="button" class="button button-secondary" id="pdfw-download-transcription-lipsync" disabled>Baixar Lipsync JSON</button>
               </div>
               <textarea id="pdfw-transcription-text" rows="15" class="pdfw-content-editor" readonly></textarea>
             </div>

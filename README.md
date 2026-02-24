@@ -4,7 +4,7 @@ Plugin WordPress para geração de ebook em HTML/PDF com temas visuais, focado e
 
 ## Status
 
-Versão atual (v0.4.0):
+Versão atual (v0.4.1):
 
 - tela admin `PDF Ebook Studio`
 - gestão de projetos e clientes no próprio WordPress (salvar, carregar, excluir)
@@ -22,8 +22,11 @@ Versão atual (v0.4.0):
 - prévia dupla: `Prévia fiel (PDF)` e `Prévia rápida (HTML)`
 - reaproveitamento de cache entre prévia e geração final (evita reprocessar quando nada mudou)
 - botão para aplicar no editor as receitas consolidadas vindas da prévia/importação
-- importação automática por upload (`txt`, `md`, `html`, `docx`, `pdf`)
+- importação automática por upload (`txt`, `md`, `html`, `docx`, `pdf`, `mp3`, `wav`, `m4a`, `ogg`, `mp4`, `mpeg`, `webm`, `mkv`)
 - importação automática por link público de pasta Google Drive (com subpastas)
+- laboratório de transcrição com Whisper (áudio e vídeo)
+- exportação direta de transcrição em `TXT`, `SRT`, `VTT` e `Lipsync JSON`
+- proteção de memória para `verbose_json` com streaming em arquivo temporário
 - exportação em `HTML`
 - exportação em `PDF` com `dompdf` embutido no plugin
 

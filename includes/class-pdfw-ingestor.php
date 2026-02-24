@@ -15,6 +15,8 @@ class PDFW_Ingestor
     private const IMAGE_INLINE_TOTAL_BYTES = 6 * 1024 * 1024;
     private const TEMP_IMAGE_TTL = 604800;
     private const TRANSCRIBE_TIMEOUT = 600;
+    private const MAX_TRANSCRIBE_RESPONSE_BYTES = 32 * 1024 * 1024;
+    private const TRANSCRIBE_STREAM_CHUNK_BYTES = 65536;
     private const DEFAULT_WHISPER_URL = 'https://transcrever.rente.com.br/v1/audio/transcriptions';
 
     private static int $inline_image_count = 0;
@@ -58,6 +60,10 @@ class PDFW_Ingestor
         'wav' => true,
         'm4a' => true,
         'ogg' => true,
+        'mp4' => true,
+        'mpeg' => true,
+        'webm' => true,
+        'mkv' => true,
     ];
 
     /**
@@ -146,7 +152,46 @@ class PDFW_Ingestor
      */
     public static function transcribe_media(string $file_path, array &$logs): string
     {
-        return self::transcribe_audio($file_path, $logs);
+        $outputs = self::transcribe_media_outputs($file_path, $logs);
+        return (string) ($outputs['text'] ?? '');
+    }
+
+    /**
+     * @param array<int, string> $logs
+     * @return array{text: string, srt: string, vtt: string, lipsync_json: string}
+     */
+    public static function transcribe_media_outputs(string $file_path, array &$logs): array
+    {
+        $outputs = [
+            'text' => '',
+            'srt' => '',
+            'vtt' => '',
+            'lipsync_json' => '',
+        ];
+
+        $verbose_raw = self::transcribe_audio($file_path, $logs, 'verbose_json', true);
+        if ($verbose_raw !== '') {
+            $verbose_decoded = json_decode($verbose_raw, true);
+            if (is_array($verbose_decoded)) {
+                if (! empty($verbose_decoded['text']) && is_string($verbose_decoded['text'])) {
+                    $outputs['text'] = self::normalize_text((string) $verbose_decoded['text']);
+                }
+                $outputs['lipsync_json'] = self::build_lipsync_payload($verbose_decoded, $outputs['text']);
+            }
+        }
+
+        if ($outputs['text'] === '') {
+            $outputs['text'] = self::transcribe_audio($file_path, $logs, 'text');
+        }
+
+        $outputs['srt'] = self::transcribe_audio($file_path, $logs, 'srt', true);
+        $outputs['vtt'] = self::transcribe_audio($file_path, $logs, 'vtt', true);
+
+        if ($outputs['lipsync_json'] === '') {
+            $outputs['lipsync_json'] = self::build_lipsync_payload([], $outputs['text']);
+        }
+
+        return $outputs;
     }
 
     /**
@@ -934,6 +979,18 @@ class PDFW_Ingestor
             } elseif (strpos($ctype, 'audio/ogg') !== false) {
                 $ext = 'ogg';
                 $name .= '.ogg';
+            } elseif (strpos($ctype, 'audio/webm') !== false || strpos($ctype, 'video/webm') !== false) {
+                $ext = 'webm';
+                $name .= '.webm';
+            } elseif (strpos($ctype, 'video/mp4') !== false) {
+                $ext = 'mp4';
+                $name .= '.mp4';
+            } elseif (strpos($ctype, 'video/mpeg') !== false) {
+                $ext = 'mpeg';
+                $name .= '.mpeg';
+            } elseif (strpos($ctype, 'video/x-matroska') !== false || strpos($ctype, 'video/mkv') !== false) {
+                $ext = 'mkv';
+                $name .= '.mkv';
             } else {
                 $ext = 'txt';
                 $name .= '.txt';
@@ -1072,21 +1129,35 @@ class PDFW_Ingestor
     /**
      * @param array<int, string> $logs
      */
-    private static function transcribe_audio(string $file_path, array &$logs): string
+    private static function transcribe_audio(string $file_path, array &$logs, string $response_format = 'text', bool $optional = false): string
     {
+        $response_format = strtolower(trim($response_format));
+        if (! in_array($response_format, ['text', 'srt', 'vtt', 'verbose_json'], true)) {
+            if (! $optional) {
+                $logs[] = 'Formato de resposta da transcrição não suportado: ' . sanitize_text_field($response_format);
+            }
+            return '';
+        }
+
         if (! is_file($file_path) || ! is_readable($file_path)) {
-            $logs[] = 'Arquivo de áudio não encontrado para transcrição.';
+            if (! $optional) {
+                $logs[] = 'Arquivo de áudio não encontrado para transcrição.';
+            }
             return '';
         }
 
         $size = @filesize($file_path);
         if (is_int($size) && $size > self::MAX_AUDIO_FILE_BYTES) {
-            $logs[] = 'Arquivo de áudio excede o limite suportado para transcrição.';
+            if (! $optional) {
+                $logs[] = 'Arquivo de áudio excede o limite suportado para transcrição.';
+            }
             return '';
         }
 
         if (! function_exists('curl_init') || ! function_exists('curl_file_create')) {
-            $logs[] = 'Extensão cURL não disponível no servidor para transcrição.';
+            if (! $optional) {
+                $logs[] = 'Extensão cURL não disponível no servidor para transcrição.';
+            }
             return '';
         }
 
@@ -1101,69 +1172,332 @@ class PDFW_Ingestor
             return '';
         }
 
+        $stream_response = ($response_format === 'verbose_json');
+        $response_tmp_path = '';
+        $response_tmp_handle = null;
+        $raw = '';
+
         $payload = [
             'file' => $curl_file,
             'model' => 'medium',
             'language' => 'pt',
-            'response_format' => 'text',
+            'response_format' => $response_format,
         ];
-
-        curl_setopt_array($ch, [
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => $payload,
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_CONNECTTIMEOUT => 30,
-            CURLOPT_TIMEOUT => self::TRANSCRIBE_TIMEOUT,
-            CURLOPT_FOLLOWLOCATION => true,
-            CURLOPT_MAXREDIRS => 2,
-            CURLOPT_HTTPHEADER => [
-                'Accept: text/plain, application/json',
-            ],
-        ]);
-
-        $response_body = curl_exec($ch);
-        $curl_error = curl_error($ch);
-        $http_code = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-        curl_close($ch);
-
-        if ($response_body === false) {
-            $logs[] = 'Falha ao chamar API de transcrição: ' . $curl_error;
-            return '';
+        if ($response_format === 'verbose_json') {
+            $payload['timestamp_granularities[0]'] = 'word';
+            $payload['timestamp_granularities[1]'] = 'segment';
         }
 
-        $raw = trim((string) $response_body);
+        if ($stream_response) {
+            $tmp = wp_tempnam('pdfw-whisper-response');
+            if (! is_string($tmp) || $tmp === '') {
+                if (! $optional) {
+                    $logs[] = 'Não foi possível criar arquivo temporário para resposta de transcrição.';
+                }
+                curl_close($ch);
+                return '';
+            }
+            $response_tmp_path = $tmp;
+            $handle = @fopen($response_tmp_path, 'wb');
+            if (! is_resource($handle)) {
+                if (! $optional) {
+                    $logs[] = 'Não foi possível abrir arquivo temporário para streaming da transcrição.';
+                }
+                @unlink($response_tmp_path);
+                curl_close($ch);
+                return '';
+            }
+            $response_tmp_handle = $handle;
+        }
+
+        try {
+            $opts = [
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => $payload,
+                CURLOPT_CONNECTTIMEOUT => 30,
+                CURLOPT_TIMEOUT => self::TRANSCRIBE_TIMEOUT,
+                CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_MAXREDIRS => 2,
+                CURLOPT_HTTPHEADER => [
+                    'Accept: text/plain, application/json',
+                ],
+            ];
+
+            if ($stream_response && is_resource($response_tmp_handle)) {
+                $opts[CURLOPT_RETURNTRANSFER] = false;
+                $opts[CURLOPT_FILE] = $response_tmp_handle;
+            } else {
+                $opts[CURLOPT_RETURNTRANSFER] = true;
+            }
+
+            curl_setopt_array($ch, $opts);
+
+            $response_body = curl_exec($ch);
+            $curl_error = curl_error($ch);
+            $http_code = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+
+            if ($response_body === false) {
+                if (! $optional) {
+                    $logs[] = 'Falha ao chamar API de transcrição: ' . $curl_error;
+                }
+                return '';
+            }
+
+            if ($stream_response) {
+                if (! is_resource($response_tmp_handle)) {
+                    if (! $optional) {
+                        $logs[] = 'Falha no streaming da resposta de transcrição.';
+                    }
+                    return '';
+                }
+                @fflush($response_tmp_handle);
+                @fclose($response_tmp_handle);
+                $response_tmp_handle = null;
+                $raw = self::read_temp_response_limited($response_tmp_path, $logs, $optional);
+            } else {
+                $raw = trim((string) $response_body);
+            }
+        } finally {
+            if (is_resource($response_tmp_handle)) {
+                @fclose($response_tmp_handle);
+            }
+            if ($response_tmp_path !== '') {
+                @unlink($response_tmp_path);
+            }
+            curl_close($ch);
+        }
+
         if ($http_code < 200 || $http_code >= 300) {
             $snippet = mb_substr($raw, 0, 300);
-            $logs[] = 'API de transcrição retornou HTTP ' . $http_code . ($snippet !== '' ? (': ' . $snippet) : '.');
+            if (! $optional) {
+                $logs[] = 'API de transcrição retornou HTTP ' . $http_code . ' (' . $response_format . ')' . ($snippet !== '' ? (': ' . $snippet) : '.');
+            }
             return '';
         }
 
         if ($raw === '') {
-            $logs[] = 'API de transcrição retornou conteúdo vazio.';
+            if (! $optional) {
+                $logs[] = 'API de transcrição retornou conteúdo vazio (' . $response_format . ').';
+            }
             return '';
         }
 
         if ($raw[0] === '{' || $raw[0] === '[') {
             $json = json_decode($raw, true);
             if (is_array($json)) {
+                if ($response_format === 'verbose_json') {
+                    return (string) wp_json_encode($json, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                }
                 if (! empty($json['text']) && is_string($json['text'])) {
-                    return self::normalize_text((string) $json['text']);
+                    return $response_format === 'text'
+                        ? self::normalize_text((string) $json['text'])
+                        : trim((string) $json['text']);
                 }
                 if (! empty($json['error']) && is_array($json['error']) && ! empty($json['error']['message'])) {
-                    $logs[] = 'Erro da API de transcrição: ' . sanitize_text_field((string) $json['error']['message']);
+                    if (! $optional) {
+                        $logs[] = 'Erro da API de transcrição: ' . sanitize_text_field((string) $json['error']['message']);
+                    }
                     return '';
                 }
             }
         }
 
-        return self::normalize_text($raw);
+        if ($response_format === 'text') {
+            return self::normalize_text($raw);
+        }
+        if ($response_format === 'vtt') {
+            $body = preg_replace("/\r\n?/", "\n", $raw);
+            $body = trim((string) $body);
+            if ($body === '') {
+                return '';
+            }
+            if (strpos(strtoupper($body), 'WEBVTT') !== 0) {
+                return "WEBVTT\n\n" . $body;
+            }
+            return $body;
+        }
+
+        return trim((string) preg_replace("/\r\n?/", "\n", $raw));
+    }
+
+    /**
+     * @param array<int, string> $logs
+     */
+    private static function read_temp_response_limited(string $file_path, array &$logs, bool $optional): string
+    {
+        if (! is_file($file_path) || ! is_readable($file_path)) {
+            if (! $optional) {
+                $logs[] = 'Resposta de transcrição não pôde ser lida do arquivo temporário.';
+            }
+            return '';
+        }
+
+        $handle = @fopen($file_path, 'rb');
+        if (! is_resource($handle)) {
+            if (! $optional) {
+                $logs[] = 'Falha ao abrir resposta temporária da transcrição.';
+            }
+            return '';
+        }
+
+        $buffer = '';
+        $total = 0;
+        $truncated = false;
+
+        while (! feof($handle)) {
+            $chunk = fread($handle, self::TRANSCRIBE_STREAM_CHUNK_BYTES);
+            if ($chunk === false) {
+                break;
+            }
+            if ($chunk === '') {
+                continue;
+            }
+
+            $chunk_len = strlen($chunk);
+            $total += $chunk_len;
+
+            if ($total > self::MAX_TRANSCRIBE_RESPONSE_BYTES) {
+                $overflow = $total - self::MAX_TRANSCRIBE_RESPONSE_BYTES;
+                $allowed = $chunk_len - $overflow;
+                if ($allowed > 0) {
+                    $buffer .= substr($chunk, 0, $allowed);
+                }
+                $truncated = true;
+                break;
+            }
+
+            $buffer .= $chunk;
+        }
+
+        @fclose($handle);
+
+        if ($truncated) {
+            if (! $optional) {
+                $logs[] = 'Resposta da API de transcrição excedeu o limite de memória seguro.';
+            }
+            return '';
+        }
+
+        return trim((string) preg_replace("/\r\n?/", "\n", $buffer));
+    }
+
+    /**
+     * @param array<string, mixed> $verbose_payload
+     */
+    private static function build_lipsync_payload(array $verbose_payload, string $fallback_text): string
+    {
+        $cues = [];
+        $timing_source = 'none';
+
+        $words = is_array($verbose_payload['words'] ?? null) ? $verbose_payload['words'] : [];
+        if ($words) {
+            foreach ($words as $word) {
+                if (! is_array($word)) {
+                    continue;
+                }
+                $token = trim((string) ($word['word'] ?? $word['text'] ?? ''));
+                if ($token === '') {
+                    continue;
+                }
+                $start = isset($word['start']) ? (float) $word['start'] : 0.0;
+                $end = isset($word['end']) ? (float) $word['end'] : $start + 0.24;
+                if ($end <= $start) {
+                    $end = $start + 0.24;
+                }
+                $cues[] = [
+                    'type' => 'word',
+                    'text' => $token,
+                    'start' => round($start, 3),
+                    'end' => round($end, 3),
+                ];
+            }
+            if ($cues) {
+                $timing_source = 'word';
+            }
+        }
+
+        if (! $cues) {
+            $segments = is_array($verbose_payload['segments'] ?? null) ? $verbose_payload['segments'] : [];
+            foreach ($segments as $segment) {
+                if (! is_array($segment)) {
+                    continue;
+                }
+                $text = trim((string) ($segment['text'] ?? ''));
+                if ($text === '') {
+                    continue;
+                }
+                $start = isset($segment['start']) ? (float) $segment['start'] : 0.0;
+                $end = isset($segment['end']) ? (float) $segment['end'] : $start + 1.2;
+                if ($end <= $start) {
+                    $end = $start + 1.2;
+                }
+                $cues[] = [
+                    'type' => 'segment',
+                    'text' => $text,
+                    'start' => round($start, 3),
+                    'end' => round($end, 3),
+                ];
+            }
+            if ($cues) {
+                $timing_source = 'segment';
+            }
+        }
+
+        $text = trim((string) ($verbose_payload['text'] ?? ''));
+        if ($text === '') {
+            $text = self::normalize_text($fallback_text);
+        }
+
+        if (! $cues && $text !== '') {
+            $tokens = preg_split('/\s+/u', $text) ?: [];
+            $cursor = 0.0;
+            foreach ($tokens as $token) {
+                $clean = trim((string) $token);
+                if ($clean === '') {
+                    continue;
+                }
+                $length = mb_strlen($clean);
+                $duration = max(0.14, min(0.6, 0.18 + ($length * 0.02)));
+                $cues[] = [
+                    'type' => 'word',
+                    'text' => $clean,
+                    'start' => round($cursor, 3),
+                    'end' => round($cursor + $duration, 3),
+                ];
+                $cursor += $duration;
+            }
+            if ($cues) {
+                $timing_source = 'heuristic';
+            }
+        }
+
+        $payload = [
+            'format' => 'pdfw_lipsync_v1',
+            'config' => [
+                'engine' => 'faster-whisper',
+                'language' => 'pt',
+                'timing_source' => $timing_source,
+                'time_unit' => 'seconds',
+                'fps_hint' => 30,
+            ],
+            'text' => $text,
+            'cues' => $cues,
+        ];
+
+        return (string) wp_json_encode(
+            $payload,
+            JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+        );
     }
 
     private static function guess_audio_mime(string $file_path, string $ext): string
     {
         if (function_exists('mime_content_type')) {
             $detected = @mime_content_type($file_path);
-            if (is_string($detected) && strpos($detected, 'audio/') === 0) {
+            if (
+                is_string($detected)
+                && (strpos($detected, 'audio/') === 0 || strpos($detected, 'video/') === 0)
+            ) {
                 return $detected;
             }
         }
@@ -1186,6 +1520,12 @@ class PDFW_Ingestor
         }
         if ($ext === 'webm') {
             return 'video/webm';
+        }
+        if ($ext === 'mpeg') {
+            return 'video/mpeg';
+        }
+        if ($ext === 'mkv') {
+            return 'video/x-matroska';
         }
 
         return 'application/octet-stream';

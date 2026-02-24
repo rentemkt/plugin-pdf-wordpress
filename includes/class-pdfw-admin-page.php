@@ -219,7 +219,7 @@ class PDFW_Admin_Page
         }
 
         $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
-        $allowed_ext = ['mp3', 'wav', 'm4a', 'ogg', 'mp4', 'mpeg', 'webm'];
+        $allowed_ext = ['mp3', 'wav', 'm4a', 'ogg', 'mp4', 'mpeg', 'webm', 'mkv'];
         if (! in_array($ext, $allowed_ext, true)) {
             wp_send_json_error(['message' => 'Formato não suportado para transcrição.'], 400);
         }
@@ -242,8 +242,20 @@ class PDFW_Admin_Page
         }
 
         $logs = [];
-        $text = PDFW_Ingestor::transcribe_media($tmp_path, $logs);
-        @unlink($tmp_path);
+        $outputs = [];
+        try {
+            $outputs = PDFW_Ingestor::transcribe_media_outputs($tmp_path, $logs);
+        } catch (\Throwable $th) {
+            $logs[] = 'Erro interno durante a transcrição.';
+            $outputs = [];
+        } finally {
+            @unlink($tmp_path);
+        }
+
+        $text = is_array($outputs) ? (string) ($outputs['text'] ?? '') : '';
+        $srt = is_array($outputs) ? (string) ($outputs['srt'] ?? '') : '';
+        $vtt = is_array($outputs) ? (string) ($outputs['vtt'] ?? '') : '';
+        $lipsync_json = is_array($outputs) ? (string) ($outputs['lipsync_json'] ?? '') : '';
 
         if (trim($text) === '') {
             $message = 'Falha na transcrição.';
@@ -255,6 +267,9 @@ class PDFW_Admin_Page
 
         wp_send_json_success([
             'text' => $text,
+            'srt' => $srt,
+            'vtt' => $vtt,
+            'lipsync_json' => $lipsync_json,
             'logs' => array_values(array_map('sanitize_text_field', $logs)),
         ]);
     }
