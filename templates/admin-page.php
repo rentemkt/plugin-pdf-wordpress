@@ -12,6 +12,7 @@
   <form method="post" action="<?php echo esc_url($action_url); ?>" class="pdfw-form" enctype="multipart/form-data">
     <?php wp_nonce_field('pdfw_generate'); ?>
     <input type="hidden" name="action" value="pdfw_generate">
+    <input type="hidden" id="pdfw-preview-nonce" value="<?php echo esc_attr($preview_nonce); ?>">
 
     <div class="pdfw-grid">
       <section class="pdfw-card">
@@ -27,6 +28,9 @@
         </label>
         <label>Selo de autoria
           <input type="text" name="seal" value="<?php echo esc_attr($payload['seal']); ?>">
+        </label>
+        <label>Imagem da capa (URL opcional)
+          <input type="url" name="cover_image" value="<?php echo esc_attr((string) ($payload['cover_image'] ?? '')); ?>" placeholder="https://.../capa.jpg">
         </label>
         <label>Tema
           <select name="theme">
@@ -86,9 +90,18 @@
     </div>
 
     <div class="pdfw-actions">
-      <button type="submit" class="button button-primary button-hero" name="pdfw_output" value="pdf">Gerar PDF</button>
-      <button type="submit" class="button button-secondary button-hero" name="pdfw_output" value="html">Gerar HTML</button>
+      <button type="button" class="button button-primary button-hero" id="pdfw-generate-preview">Gerar PDF (prévia)</button>
+      <button type="submit" class="button button-primary button-hero" id="pdfw-download-pdf" name="pdfw_output" value="pdf" style="display:none;">Baixar PDF</button>
+      <button type="submit" class="button button-secondary button-hero" id="pdfw-generate-html" name="pdfw_output" value="html">Gerar HTML</button>
       <button type="button" class="button" id="pdfw-load-sample">Restaurar exemplo</button>
     </div>
+
+    <section class="pdfw-card pdfw-preview-card">
+      <h2>Pré-visualização</h2>
+      <p class="hint">Clique em <strong>Gerar PDF (prévia)</strong>, revise o resultado e depois clique em <strong>Baixar PDF</strong>.</p>
+      <p class="hint" id="pdfw-preview-status">Nenhuma prévia gerada ainda.</p>
+      <pre id="pdfw-preview-log" class="pdfw-preview-log" hidden></pre>
+      <iframe id="pdfw-preview-frame" title="Prévia do ebook"></iframe>
+    </section>
   </form>
 </div>

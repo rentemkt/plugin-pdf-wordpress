@@ -61,6 +61,7 @@ class PDFW_Admin_Page
 
         $themes = PDFW_Renderer::theme_options();
         $action_url = admin_url('admin-post.php');
+        $preview_nonce = wp_create_nonce('pdfw_preview');
 
         include PDFW_PLUGIN_DIR . 'templates/admin-page.php';
     }
@@ -76,20 +77,10 @@ class PDFW_Admin_Page
         $payload = $this->collect_payload_from_request();
         update_option(self::OPTION_KEY, $payload, false);
 
-        $imported = PDFW_Ingestor::ingest(
-            is_array($_FILES['source_files'] ?? null) ? $_FILES['source_files'] : [],
-            (string) ($payload['drive_folder_url'] ?? '')
-        );
-        $manual_recipes = PDFW_Renderer::recipes_from_raw((string) ($payload['recipes_raw'] ?? ''));
-        $imported_recipes = $imported['recipes'];
-
-        if (($payload['import_mode'] ?? 'append') === 'replace' && ! empty($imported_recipes)) {
-            $final_recipes = $imported_recipes;
-        } else {
-            $final_recipes = PDFW_Renderer::merge_recipes($manual_recipes, $imported_recipes);
-        }
-
-        $import_notice = PDFW_Ingestor::logs_to_notice($imported['logs']);
+        $prepared = $this->prepare_render_data($payload);
+        $payload = $prepared['payload'];
+        $final_recipes = $prepared['recipes'];
+        $import_notice = $prepared['notice'];
 
         $html = PDFW_Renderer::render($payload, $final_recipes);
         $slug = sanitize_title($payload['title']);
@@ -116,17 +107,76 @@ class PDFW_Admin_Page
         $this->download_pdf((string) $result['content'], $slug . '.pdf');
     }
 
+    public function handle_preview(): void
+    {
+        if (! current_user_can('manage_options')) {
+            wp_send_json_error(['message' => 'Sem permissão.'], 403);
+        }
+
+        check_ajax_referer('pdfw_preview', 'nonce');
+
+        $payload = $this->collect_payload_from_request();
+        update_option(self::OPTION_KEY, $payload, false);
+
+        $prepared = $this->prepare_render_data($payload);
+        $html = PDFW_Renderer::render($prepared['payload'], $prepared['recipes']);
+
+        wp_send_json_success([
+            'html' => $html,
+            'notice' => $prepared['notice'],
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array{payload: array<string, mixed>, recipes: array<int, array<string, mixed>>, notice: string}
+     */
+    private function prepare_render_data(array $payload): array
+    {
+        $imported = PDFW_Ingestor::ingest(
+            is_array($_FILES['source_files'] ?? null) ? $_FILES['source_files'] : [],
+            (string) ($payload['drive_folder_url'] ?? '')
+        );
+        $manual_recipes = PDFW_Renderer::recipes_from_raw((string) ($payload['recipes_raw'] ?? ''));
+        $imported_recipes = is_array($imported['recipes'] ?? null) ? $imported['recipes'] : [];
+
+        if (($payload['import_mode'] ?? 'append') === 'replace' && ! empty($imported_recipes)) {
+            $final_recipes = $imported_recipes;
+        } else {
+            $final_recipes = PDFW_Renderer::merge_recipes($manual_recipes, $imported_recipes);
+        }
+
+        $image_entries = is_array($imported['image_entries'] ?? null) ? $imported['image_entries'] : [];
+        $final_recipes = PDFW_Renderer::apply_images($final_recipes, $image_entries);
+
+        $cover_image = (string) ($payload['cover_image'] ?? '');
+        if ($cover_image === '') {
+            $cover_image = (string) ($imported['cover_image'] ?? '');
+        }
+        if ($cover_image === '') {
+            $cover_image = PDFW_Renderer::pick_cover_image($image_entries);
+        }
+        $payload['cover_image'] = $this->sanitize_image_source($cover_image);
+
+        return [
+            'payload' => $payload,
+            'recipes' => $final_recipes,
+            'notice' => PDFW_Ingestor::logs_to_notice(is_array($imported['logs'] ?? null) ? $imported['logs'] : []),
+        ];
+    }
+
     private function collect_payload_from_request(): array
     {
-        $theme = isset($_POST['theme']) ? sanitize_key((string) $_POST['theme']) : 'grafite-dourado';
+        $theme = isset($_POST['theme']) ? sanitize_key((string) $_POST['theme']) : 'ebook2-classic';
         if (! array_key_exists($theme, PDFW_Renderer::theme_options())) {
-            $theme = 'grafite-dourado';
+            $theme = 'ebook2-classic';
         }
 
         $recipes_raw = isset($_POST['recipes_raw']) ? wp_unslash((string) $_POST['recipes_raw']) : '';
         $about_raw = isset($_POST['about']) ? wp_unslash((string) $_POST['about']) : '';
         $tips_raw = isset($_POST['tips']) ? wp_unslash((string) $_POST['tips']) : '';
         $drive_folder_url = isset($_POST['drive_folder_url']) ? wp_unslash((string) $_POST['drive_folder_url']) : '';
+        $cover_image = isset($_POST['cover_image']) ? wp_unslash((string) $_POST['cover_image']) : '';
         $import_mode = isset($_POST['import_mode']) ? sanitize_key((string) $_POST['import_mode']) : 'append';
         if (! in_array($import_mode, ['append', 'replace'], true)) {
             $import_mode = 'append';
@@ -142,8 +192,21 @@ class PDFW_Admin_Page
             'about' => trim($about_raw),
             'tips' => trim($tips_raw),
             'drive_folder_url' => esc_url_raw(trim($drive_folder_url)),
+            'cover_image' => $this->sanitize_image_source($cover_image),
             'import_mode' => $import_mode,
         ];
+    }
+
+    private function sanitize_image_source(string $value): string
+    {
+        $value = trim($value);
+        if ($value === '') {
+            return '';
+        }
+        if (strpos($value, 'data:image/') === 0) {
+            return $value;
+        }
+        return esc_url_raw($value);
     }
 
     private function download_html(string $html, string $filename): void

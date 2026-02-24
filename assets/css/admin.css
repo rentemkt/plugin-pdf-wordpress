@@ -41,6 +41,7 @@
 }
 
 .pdfw-card input[type="text"],
+.pdfw-card input[type="url"],
 .pdfw-card select,
 .pdfw-card textarea {
   width: 100%;
@@ -61,7 +62,40 @@
 .pdfw-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
+}
+
+.pdfw-preview-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 720px;
+}
+
+#pdfw-preview-status {
+  margin-bottom: 8px;
+}
+
+.pdfw-preview-log {
+  margin: 0 0 10px 0;
+  border: 1px solid #dcdcde;
+  border-radius: 6px;
+  background: #f6f7f7;
+  color: #1d2327;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  padding: 10px;
+  max-height: 140px;
+  overflow: auto;
+}
+
+#pdfw-preview-frame {
+  width: 100%;
+  min-height: 620px;
+  border: 1px solid #dcdcde;
+  border-radius: 8px;
+  background: #fff;
 }
 
 @media (max-width: 1100px) {

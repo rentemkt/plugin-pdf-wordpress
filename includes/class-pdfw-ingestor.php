@@ -23,7 +23,7 @@ class PDFW_Ingestor
     ];
 
     /** @var array<string, bool> */
-    private static array $supported_ext_map = [
+    private static array $supported_text_ext_map = [
         'txt' => true,
         'md' => true,
         'html' => true,
@@ -32,15 +32,31 @@ class PDFW_Ingestor
         'pdf' => true,
     ];
 
+    /** @var array<string, bool> */
+    private static array $supported_image_ext_map = [
+        'jpg' => true,
+        'jpeg' => true,
+        'png' => true,
+        'webp' => true,
+    ];
+
     /**
      * @param array<string, mixed> $uploaded_files
-     * @return array{recipes: array<int, array<string, mixed>>, logs: array<int, string>, imported_files: int}
+     * @return array{
+     *   recipes: array<int, array<string, mixed>>,
+     *   logs: array<int, string>,
+     *   imported_files: int,
+     *   image_entries: array<int, array<string, mixed>>,
+     *   cover_image: string
+     * }
      */
     public static function ingest(array $uploaded_files, string $drive_folder_url = ''): array
     {
         $logs = [];
         $recipes = [];
         $imported_files = 0;
+        $image_entries = [];
+        $cover_image = '';
 
         $local_files = self::normalize_uploaded_files($uploaded_files);
         if ($local_files) {
@@ -51,10 +67,17 @@ class PDFW_Ingestor
                     $logs[] = "Arquivo ignorado (tmp ausente): {$name}";
                     continue;
                 }
+
                 $parsed = self::parse_file_from_path($tmp, $name, $logs);
-                if (! empty($parsed)) {
+                if (! empty($parsed['recipes'])) {
                     $imported_files++;
-                    $recipes = array_merge($recipes, $parsed);
+                    $recipes = array_merge($recipes, $parsed['recipes']);
+                }
+                if (! empty($parsed['image_entry'])) {
+                    $image_entries[] = $parsed['image_entry'];
+                    if ($cover_image === '' && self::is_cover_image_name($name)) {
+                        $cover_image = (string) $parsed['image_entry']['src'];
+                    }
                 }
             }
         }
@@ -65,13 +88,20 @@ class PDFW_Ingestor
             $logs = array_merge($logs, $drive_result['logs']);
             $imported_files += (int) $drive_result['imported_files'];
             $recipes = array_merge($recipes, $drive_result['recipes']);
+            $image_entries = array_merge($image_entries, $drive_result['image_entries']);
+            if ($cover_image === '' && (string) ($drive_result['cover_image'] ?? '') !== '') {
+                $cover_image = (string) $drive_result['cover_image'];
+            }
         }
 
         $recipes = self::dedupe_recipes($recipes);
+        $image_entries = self::unique_image_entries($image_entries);
         return [
             'recipes' => $recipes,
             'logs' => $logs,
             'imported_files' => $imported_files,
+            'image_entries' => $image_entries,
+            'cover_image' => $cover_image,
         ];
     }
 
@@ -108,50 +138,72 @@ class PDFW_Ingestor
 
     /**
      * @param array<int, string> $logs
-     * @return array<int, array<string, mixed>>
+     * @return array{
+     *   recipes: array<int, array<string, mixed>>,
+     *   image_entry: array<string, mixed>|null
+     * }
      */
     private static function parse_file_from_path(string $path, string $name, array &$logs): array
     {
         $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
-        if ($ext === '' || ! isset(self::$supported_ext_map[$ext])) {
+        if ($ext === '' || (! isset(self::$supported_text_ext_map[$ext]) && ! isset(self::$supported_image_ext_map[$ext]))) {
             $logs[] = "Formato não suportado: {$name}";
-            return [];
+            return ['recipes' => [], 'image_entry' => null];
+        }
+
+        if (isset(self::$supported_image_ext_map[$ext])) {
+            $image_entry = self::build_image_entry_from_path($path, $name, $ext, $logs);
+            return [
+                'recipes' => [],
+                'image_entry' => $image_entry,
+            ];
         }
 
         if (self::should_skip_by_name($name)) {
             $logs[] = "Arquivo não-receita ignorado: {$name}";
-            return [];
+            return ['recipes' => [], 'image_entry' => null];
         }
 
         $size = @filesize($path);
         if (is_int($size) && $size > self::MAX_FILE_BYTES) {
             $logs[] = "Arquivo muito grande ignorado ({$name})";
-            return [];
+            return ['recipes' => [], 'image_entry' => null];
         }
 
         $text = self::extract_text_from_path($path, $ext, $logs);
         if (trim($text) === '') {
             $logs[] = "Não foi possível extrair texto: {$name}";
-            return [];
+            return ['recipes' => [], 'image_entry' => null];
         }
 
         $recipes = self::extract_recipes_from_text($text, pathinfo($name, PATHINFO_FILENAME));
         if (! $recipes) {
             $logs[] = "Sem receita detectada em: {$name}";
-            return [];
+            return ['recipes' => [], 'image_entry' => null];
         }
 
-        return $recipes;
+        return [
+            'recipes' => $recipes,
+            'image_entry' => null,
+        ];
     }
 
     /**
-     * @return array{recipes: array<int, array<string, mixed>>, logs: array<int, string>, imported_files: int}
+     * @return array{
+     *   recipes: array<int, array<string, mixed>>,
+     *   logs: array<int, string>,
+     *   imported_files: int,
+     *   image_entries: array<int, array<string, mixed>>,
+     *   cover_image: string
+     * }
      */
     private static function ingest_from_drive_folder(string $folder_url): array
     {
         $logs = [];
         $recipes = [];
         $imported_files = 0;
+        $image_entries = [];
+        $cover_image = '';
 
         $folder_id = self::extract_drive_folder_id($folder_url);
         if ($folder_id === '') {
@@ -159,6 +211,8 @@ class PDFW_Ingestor
                 'recipes' => [],
                 'logs' => ['Link de pasta do Google Drive inválido.'],
                 'imported_files' => 0,
+                'image_entries' => [],
+                'cover_image' => '',
             ];
         }
 
@@ -172,6 +226,8 @@ class PDFW_Ingestor
                 'recipes' => [],
                 'logs' => $logs,
                 'imported_files' => 0,
+                'image_entries' => [],
+                'cover_image' => '',
             ];
         }
 
@@ -187,15 +243,31 @@ class PDFW_Ingestor
                 continue;
             }
 
-            $recipes_from_file = self::parse_file_blob(
-                $download['name'],
-                $download['ext'],
-                $download['content'],
-                $logs
-            );
-            if ($recipes_from_file) {
-                $recipes = array_merge($recipes, $recipes_from_file);
-                $imported_files++;
+            if (isset(self::$supported_image_ext_map[$download['ext']])) {
+                $image_entry = self::build_image_entry_from_blob(
+                    $download['content'],
+                    $download['name'],
+                    $download['ext'],
+                    $logs
+                );
+                if ($image_entry) {
+                    $image_entries[] = $image_entry;
+                    if ($cover_image === '' && self::is_cover_image_name($download['name'])) {
+                        $cover_image = (string) $image_entry['src'];
+                    }
+                    $imported_files++;
+                }
+            } else {
+                $recipes_from_file = self::parse_file_blob(
+                    $download['name'],
+                    $download['ext'],
+                    $download['content'],
+                    $logs
+                );
+                if ($recipes_from_file) {
+                    $recipes = array_merge($recipes, $recipes_from_file);
+                    $imported_files++;
+                }
             }
             $count++;
         }
@@ -204,6 +276,8 @@ class PDFW_Ingestor
             'recipes' => $recipes,
             'logs' => $logs,
             'imported_files' => $imported_files,
+            'image_entries' => self::unique_image_entries($image_entries),
+            'cover_image' => $cover_image,
         ];
     }
 
@@ -419,13 +493,22 @@ class PDFW_Ingestor
             } elseif (strpos($ctype, 'wordprocessingml') !== false) {
                 $ext = 'docx';
                 $name .= '.docx';
+            } elseif (strpos($ctype, 'image/jpeg') !== false || strpos($ctype, 'image/jpg') !== false) {
+                $ext = 'jpg';
+                $name .= '.jpg';
+            } elseif (strpos($ctype, 'image/png') !== false) {
+                $ext = 'png';
+                $name .= '.png';
+            } elseif (strpos($ctype, 'image/webp') !== false) {
+                $ext = 'webp';
+                $name .= '.webp';
             } else {
                 $ext = 'txt';
                 $name .= '.txt';
             }
         }
 
-        if (! isset(self::$supported_ext_map[$ext])) {
+        if (! isset(self::$supported_text_ext_map[$ext]) && ! isset(self::$supported_image_ext_map[$ext])) {
             return null;
         }
         if (strlen($body) > self::MAX_FILE_BYTES) {
@@ -715,6 +798,126 @@ class PDFW_Ingestor
             '/^(informa[cç][aã]o nutricional|tabela nutricional|valores nutricionais|rendimento|receita|energia|por[cç][aã]o)\\b/iu',
             trim($line)
         );
+    }
+
+    /**
+     * @param array<int, string> $logs
+     * @return array<string, mixed>|null
+     */
+    private static function build_image_entry_from_path(string $path, string $name, string $ext, array &$logs): ?array
+    {
+        $size = @filesize($path);
+        if (is_int($size) && $size > self::MAX_FILE_BYTES) {
+            $logs[] = "Imagem muito grande ignorada ({$name})";
+            return null;
+        }
+
+        $contents = @file_get_contents($path);
+        if (! is_string($contents) || $contents === '') {
+            return null;
+        }
+
+        return self::build_image_entry_from_blob($contents, $name, $ext, $logs);
+    }
+
+    /**
+     * @param array<int, string> $logs
+     * @return array<string, mixed>|null
+     */
+    private static function build_image_entry_from_blob(string $content, string $name, string $ext, array &$logs): ?array
+    {
+        if (strlen($content) > self::MAX_FILE_BYTES) {
+            $logs[] = "Imagem muito grande ignorada ({$name})";
+            return null;
+        }
+
+        $mime = self::guess_image_mime($ext, $content);
+        if (strpos($mime, 'image/') !== 0) {
+            $logs[] = "Arquivo de imagem inválido ignorado ({$name})";
+            return null;
+        }
+
+        $base = pathinfo($name, PATHINFO_FILENAME);
+        if ($base === '') {
+            $base = 'imagem';
+        }
+
+        return [
+            'name' => $name,
+            'base' => $base,
+            'key' => self::normalize_image_key($base),
+            'src' => 'data:' . $mime . ';base64,' . base64_encode($content),
+            'is_cover_hint' => self::is_cover_image_name($name),
+        ];
+    }
+
+    private static function guess_image_mime(string $ext, string $content): string
+    {
+        $mime = '';
+        if (function_exists('getimagesizefromstring')) {
+            $info = @getimagesizefromstring($content);
+            if (is_array($info) && ! empty($info['mime'])) {
+                $mime = strtolower((string) $info['mime']);
+            }
+        }
+
+        if ($mime !== '') {
+            return $mime;
+        }
+
+        $ext = strtolower($ext);
+        if ($ext === 'jpg' || $ext === 'jpeg') {
+            return 'image/jpeg';
+        }
+        if ($ext === 'png') {
+            return 'image/png';
+        }
+        if ($ext === 'webp') {
+            return 'image/webp';
+        }
+
+        return 'application/octet-stream';
+    }
+
+    private static function normalize_image_key(string $text): string
+    {
+        $text = remove_accents(mb_strtolower($text));
+        $text = preg_replace('/[^a-z0-9]+/', '-', $text);
+        $text = trim((string) $text, '-');
+        $text = preg_replace('/^\\d+[-_]?/', '', (string) $text);
+        return trim((string) $text, '-');
+    }
+
+    private static function is_cover_image_name(string $name): bool
+    {
+        $normalized = self::normalize_image_key(pathinfo($name, PATHINFO_FILENAME));
+        if ($normalized === '') {
+            return false;
+        }
+        return (bool) preg_match('/\\b(capa|cover|front|header|hero)\\b/', str_replace('-', ' ', $normalized));
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $entries
+     * @return array<int, array<string, mixed>>
+     */
+    private static function unique_image_entries(array $entries): array
+    {
+        $seen = [];
+        $out = [];
+        foreach ($entries as $entry) {
+            $src = isset($entry['src']) ? (string) $entry['src'] : '';
+            if ($src === '') {
+                continue;
+            }
+            $key = md5($src);
+            if (isset($seen[$key])) {
+                continue;
+            }
+            $seen[$key] = true;
+            $out[] = $entry;
+        }
+        return $out;
     }
 
     /**

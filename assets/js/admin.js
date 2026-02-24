@@ -1,6 +1,14 @@
 (() => {
-  const sampleButton = document.getElementById("pdfw-load-sample");
-  if (!sampleButton) return;
+  const form = document.querySelector('.pdfw-form');
+  if (!form) return;
+
+  const sampleButton = document.getElementById('pdfw-load-sample');
+  const previewButton = document.getElementById('pdfw-generate-preview');
+  const downloadPdfButton = document.getElementById('pdfw-download-pdf');
+  const previewFrame = document.getElementById('pdfw-preview-frame');
+  const previewStatus = document.getElementById('pdfw-preview-status');
+  const previewLog = document.getElementById('pdfw-preview-log');
+  const previewNonce = document.getElementById('pdfw-preview-nonce')?.value || '';
 
   const sampleRecipes = `Panqueca de Banana
 Ingredientes:
@@ -29,11 +37,114 @@ Modo de preparo:
 Dica:
 Finalize com azeite extravirgem após o preparo.`;
 
-  sampleButton.addEventListener("click", () => {
-    const recipes = document.querySelector('textarea[name="recipes_raw"]');
-    if (!recipes) return;
-    const ok = window.confirm("Substituir o conteúdo atual pelo exemplo?");
-    if (!ok) return;
-    recipes.value = sampleRecipes;
-  });
+  if (sampleButton) {
+    sampleButton.addEventListener('click', () => {
+      const recipes = document.querySelector('textarea[name="recipes_raw"]');
+      if (!recipes) return;
+      const ok = window.confirm('Substituir o conteúdo atual pelo exemplo?');
+      if (!ok) return;
+      recipes.value = sampleRecipes;
+      recipes.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  }
+
+  let previewBusy = false;
+
+  const markDirty = () => {
+    if (downloadPdfButton) {
+      downloadPdfButton.style.display = 'none';
+    }
+    if (previewStatus) {
+      previewStatus.textContent = 'Alterações detectadas. Gere a prévia novamente.';
+    }
+  };
+
+  form.addEventListener('input', markDirty);
+  form.addEventListener('change', markDirty);
+
+  const getAjaxUrl = () => {
+    if (typeof window.ajaxurl === 'string' && window.ajaxurl) return window.ajaxurl;
+    return '/wp-admin/admin-ajax.php';
+  };
+
+  const setStatus = (text) => {
+    if (previewStatus) previewStatus.textContent = text;
+  };
+
+  const setLog = (text) => {
+    if (!previewLog) return;
+    const clean = String(text || '').trim();
+    if (clean === '') {
+      previewLog.hidden = true;
+      previewLog.textContent = '';
+      return;
+    }
+    previewLog.hidden = false;
+    previewLog.textContent = clean;
+  };
+
+  const extractError = (payload, fallback) => {
+    if (payload && payload.data && typeof payload.data.message === 'string') {
+      return payload.data.message;
+    }
+    return fallback;
+  };
+
+  const generatePreview = async () => {
+    if (previewBusy) return;
+
+    previewBusy = true;
+    if (previewButton) previewButton.disabled = true;
+    setStatus('Gerando pré-visualização...');
+    setLog('');
+
+    try {
+      const fd = new FormData(form);
+      fd.set('action', 'pdfw_preview');
+      fd.set('nonce', previewNonce);
+      fd.delete('pdfw_output');
+
+      const response = await fetch(getAjaxUrl(), {
+        method: 'POST',
+        body: fd,
+        credentials: 'same-origin',
+      });
+
+      let payload = null;
+      try {
+        payload = await response.json();
+      } catch {
+        throw new Error('Resposta inválida ao gerar prévia.');
+      }
+
+      if (!response.ok || !payload || payload.success !== true) {
+        throw new Error(extractError(payload, 'Falha ao gerar pré-visualização.'));
+      }
+
+      const html = payload?.data?.html || '';
+      if (previewFrame) {
+        previewFrame.srcdoc = html;
+      }
+
+      setLog(payload?.data?.notice || '');
+      if (downloadPdfButton) {
+        downloadPdfButton.style.display = 'inline-flex';
+      }
+      setStatus('Pré-visualização atualizada. Se estiver tudo certo, clique em Baixar PDF.');
+    } catch (err) {
+      setStatus('Erro na pré-visualização. Ajuste os dados e tente novamente.');
+      const message = err instanceof Error ? err.message : 'Erro inesperado';
+      setLog(message);
+    } finally {
+      previewBusy = false;
+      if (previewButton) previewButton.disabled = false;
+    }
+  };
+
+  if (previewButton) {
+    previewButton.addEventListener('click', (event) => {
+      event.preventDefault();
+      generatePreview();
+    });
+  }
 })();

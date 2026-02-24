@@ -28,5 +28,6 @@ final class PDFW_Plugin
         add_action('admin_menu', [$this->admin_page, 'register_menu']);
         add_action('admin_enqueue_scripts', [$this->admin_page, 'enqueue_assets']);
         add_action('admin_post_pdfw_generate', [$this->admin_page, 'handle_generate']);
+        add_action('wp_ajax_pdfw_preview', [$this->admin_page, 'handle_preview']);
     }
 }

@@ -26,6 +26,7 @@ class PDFW_Renderer
             'seal' => 'Material exclusivo do curso {title} desenvolvido por {author}',
             'theme' => 'ebook2-classic',
             'drive_folder_url' => '',
+            'cover_image' => '',
             'import_mode' => 'append',
             'tips' => implode("\n", [
                 'Monte um planejamento semanal de refeições.',
@@ -76,6 +77,7 @@ class PDFW_Renderer
 
         $about_blocks = self::paragraphs((string) ($payload['about'] ?? ''));
         $tips = self::list_items((string) ($payload['tips'] ?? ''));
+        $cover_media_html = self::cover_media_html((string) ($payload['cover_image'] ?? ''), $title_raw);
 
         $about_html = '';
         foreach ($about_blocks as $paragraph) {
@@ -245,6 +247,9 @@ class PDFW_Renderer
 html,body { font-family:'Noto Sans','Calibri',sans-serif; font-size:10.5pt; line-height:1.45; color:var(--text); background:var(--page-bg); }
 .toc,.intro,.quick-options,.recipe-title-page,.recipe-content-page,.tips-page,.back-cover{background:var(--page-bg);}
 .cover{page:cover;page-break-before:always;width:148mm;height:210mm;background:linear-gradient(155deg,var(--cover-bg),var(--cover-bg-2));position:relative;display:flex;align-items:center;justify-content:center;flex-direction:column;text-align:center;overflow:hidden;color:#fff;}
+.cover-media{position:absolute;inset:0;z-index:0;overflow:hidden;}
+.cover-media img{width:100%;height:100%;object-fit:cover;display:block;}
+.cover-media::after{content:"";position:absolute;inset:0;background:rgba(13,28,28,.42);}
 .cover::before{content:"";position:absolute;top:-35mm;left:-40mm;width:130mm;height:130mm;background:radial-gradient(circle,rgba(255,255,255,.18),transparent 70%);border-radius:50%;}
 .cover::after{content:"";position:absolute;bottom:-45mm;right:-35mm;width:150mm;height:150mm;background:radial-gradient(circle,rgba(255,255,255,.14),transparent 70%);border-radius:50%;}
 .cover-title{font-family:'Georgia','Noto Serif',serif;font-size:24pt;line-height:1.2;text-transform:uppercase;letter-spacing:1.6pt;position:relative;z-index:2;padding:0 12mm;}
@@ -316,6 +321,7 @@ html,body { font-family:'Noto Sans','Calibri',sans-serif; font-size:10.5pt; line
 </head>
 <body>
 <div class="cover">
+  {$cover_media_html}
   <h1 class="cover-title">{$title}</h1>
   <p class="cover-subtitle">{$subtitle}</p>
   <p class="cover-author">{$author}</p>
@@ -408,6 +414,98 @@ HTML;
         }
 
         return array_values($out);
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $recipes
+     * @param array<int, array<string, mixed>> $image_entries
+     * @return array<int, array<string, mixed>>
+     */
+    public static function apply_images(array $recipes, array $image_entries): array
+    {
+        $available = [];
+        foreach ($image_entries as $entry) {
+            $src = isset($entry['src']) ? trim((string) $entry['src']) : '';
+            if ($src === '') {
+                continue;
+            }
+            if (! empty($entry['is_cover_hint'])) {
+                continue;
+            }
+            $available[] = [
+                'src' => $src,
+                'key' => self::normalize_media_key((string) ($entry['key'] ?? $entry['base'] ?? $entry['name'] ?? '')),
+            ];
+        }
+
+        foreach ($recipes as $idx => $recipe) {
+            if (! is_array($recipe)) {
+                continue;
+            }
+            $existing_image = isset($recipe['image']) ? trim((string) $recipe['image']) : '';
+            if ($existing_image !== '') {
+                continue;
+            }
+
+            $title = (string) ($recipe['title'] ?? '');
+            if ($title === '') {
+                continue;
+            }
+
+            $title_key = self::normalize_media_key($title);
+            $title_tokens = self::title_tokens($title_key);
+
+            $best_idx = -1;
+            $best_score = 0;
+            foreach ($available as $image_idx => $entry) {
+                $image_key = (string) ($entry['key'] ?? '');
+                if ($image_key === '') {
+                    continue;
+                }
+
+                $score = 0;
+                if ($image_key === $title_key) {
+                    $score = 100;
+                } elseif (strpos($image_key, $title_key) !== false || strpos($title_key, $image_key) !== false) {
+                    $score = 80;
+                } else {
+                    $image_tokens = self::title_tokens($image_key);
+                    $overlap = array_intersect($title_tokens, $image_tokens);
+                    $score = count($overlap) * 10;
+                }
+
+                if ($score > $best_score) {
+                    $best_score = $score;
+                    $best_idx = $image_idx;
+                }
+            }
+
+            if ($best_idx >= 0 && $best_score >= 20) {
+                $recipes[$idx]['image'] = (string) ($available[$best_idx]['src'] ?? '');
+                unset($available[$best_idx]);
+                $available = array_values($available);
+            }
+        }
+
+        return $recipes;
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $image_entries
+     */
+    public static function pick_cover_image(array $image_entries): string
+    {
+        foreach ($image_entries as $entry) {
+            if (! empty($entry['is_cover_hint']) && ! empty($entry['src'])) {
+                return (string) $entry['src'];
+            }
+        }
+        foreach ($image_entries as $entry) {
+            if (! empty($entry['src'])) {
+                return (string) $entry['src'];
+            }
+        }
+        return '';
     }
 
     private static function sample_recipes_raw(): string
@@ -684,12 +782,29 @@ HTML;
     private static function recipe_media_html(array $recipe, array $theme, int $index, string $title): string
     {
         $image = isset($recipe['image']) ? trim((string) $recipe['image']) : '';
-        if ($image !== '' && filter_var($image, FILTER_VALIDATE_URL)) {
+        if ($image !== '' && self::is_valid_image_src($image)) {
             return '<img src="' . self::h($image) . '" alt="' . self::h($title) . '">';
         }
 
         $style = self::recipe_cover_style($theme, $index);
         return '<div class="recipe-image-fallback" style="' . self::h($style) . '"><span>' . self::h($title) . '</span></div>';
+    }
+
+    private static function cover_media_html(string $image_src, string $title): string
+    {
+        $image_src = trim($image_src);
+        if (! self::is_valid_image_src($image_src)) {
+            return '';
+        }
+        return '<div class="cover-media"><img src="' . self::h($image_src) . '" alt="' . self::h($title) . '"></div>';
+    }
+
+    private static function is_valid_image_src(string $src): bool
+    {
+        if (filter_var($src, FILTER_VALIDATE_URL)) {
+            return true;
+        }
+        return (bool) preg_match('#^data:image/[a-zA-Z0-9.+-]+;base64,#', $src);
     }
 
     private static function recipe_cover_style(array $theme, int $index): string
@@ -708,7 +823,37 @@ HTML;
     {
         $text = mb_strtolower($text, 'UTF-8');
         $text = remove_accents($text);
-        return trim($text);
+        $text = preg_replace('/[^a-z0-9]+/u', ' ', $text);
+        $text = preg_replace('/\\s+/u', ' ', (string) $text);
+        return trim((string) $text);
+    }
+
+    private static function normalize_media_key(string $text): string
+    {
+        $text = self::normalize_for_match($text);
+        $text = str_replace(' ', '-', $text);
+        $text = preg_replace('/^\\d+[-_]?/', '', (string) $text);
+        return trim((string) $text, '-');
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private static function title_tokens(string $key): array
+    {
+        $parts = preg_split('/[-\\s]+/', $key) ?: [];
+        $tokens = [];
+        foreach ($parts as $part) {
+            $part = trim((string) $part);
+            if ($part === '' || mb_strlen($part) < 3) {
+                continue;
+            }
+            if (in_array($part, ['com', 'sem', 'para', 'de', 'da', 'do', 'dos', 'das', 'e'], true)) {
+                continue;
+            }
+            $tokens[] = $part;
+        }
+        return array_values(array_unique($tokens));
     }
 
     private static function roman_numeral(int $number): string
